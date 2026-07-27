@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Encrypt any file with one of eight algorithms and download it with its key. No accounts, no storage.">
+    <title>{% block title %}FileCrypt — Encrypt & Decrypt Any File{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23ea580c'/><path d='M50 22 72 31v20c0 14-9 23-22 27-13-4-22-13-22-27V31z' fill='none' stroke='white' stroke-width='7' stroke-linejoin='round'/></svg>">
+    <script>
+        /* Applied before first paint so the page never flashes the wrong theme. */
+        (function () {
+            try {
+                var saved = localStorage.getItem("filecrypt-theme") || localStorage.getItem("cryptoimage-theme");
+                var dark = saved
+                    ? saved === "dark"
+                    : window.matchMedia("(prefers-color-scheme: dark)").matches;
+                document.documentElement.dataset.theme = dark ? "dark" : "light";
+            } catch (e) { /* private mode: fall through to the light default */ }
+        })();
+    </script>
+    {% block extra_head %}{% endblock %}
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+        <symbol id="i-shield" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></symbol>
+        <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></symbol>
+        <symbol id="i-moon" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></symbol>
+        <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
+        <symbol id="i-lock" viewBox="0 0 24 24"><rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></symbol>
+        <symbol id="i-unlock" viewBox="0 0 24 24"><rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></symbol>
+        <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 13v8M8 17l4-4 4 4M20.88 18.09A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.29"/></symbol>
+        <symbol id="i-file" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></symbol>
+        <symbol id="i-file-lock" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><rect width="8" height="5" x="8" y="13" rx="1"/><path d="M10 13v-1.5a2 2 0 0 1 4 0V13"/></symbol>
+        <symbol id="i-key" viewBox="0 0 24 24"><path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"/><circle cx="16.5" cy="7.5" r=".5" fill="currentColor"/></symbol>
+        <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></symbol>
+        <symbol id="i-check" viewBox="0 0 24 24"><path d="M21.801 10A10 10 0 1 1 17 3.335"/><path d="m9 11 3 3L22 4"/></symbol>
+        <symbol id="i-alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4M12 17h.01"/></symbol>
+        <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></symbol>
+        <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+        <symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></symbol>
+        <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+        <symbol id="i-loader" viewBox="0 0 24 24"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></symbol>
+        <symbol id="i-server" viewBox="0 0 24 24"><rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6 6h.01M6 18h.01"/></symbol>
+        <symbol id="i-layers" viewBox="0 0 24 24"><path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m6.08 9.5-3.49 1.59a1 1 0 0 0 0 1.81l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9a1 1 0 0 0 0-1.83L17.92 9.5"/></symbol>
+        <symbol id="i-zap" viewBox="0 0 24 24"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></symbol>
+        <symbol id="i-eraser" viewBox="0 0 24 24"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></symbol>
+        <symbol id="i-fingerprint" viewBox="0 0 24 24"><path d="M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4M14 13.12c0 2.38 0 6.38-1 8.88M17.29 21.02c.12-.6.43-2.3.5-3.02M2 12a10 10 0 0 1 18-6M2 16h.01M21.8 16c.2-2 .131-5.354 0-6M5 19.5C5.5 18 6 15 6 12a6 6 0 0 1 .34-2M8.65 22c.21-.66.45-1.32.57-2M9 6.8a6 6 0 0 1 9 5.2v2"/></symbol>
+        <symbol id="i-clipboard" viewBox="0 0 24 24"><rect width="8" height="4" x="8" y="2" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></symbol>
+    </defs>
+</svg>
+
+<header class="topbar">
+    <div class="shell topbar-inner">
+        <a href="{{ url_for('crypto.index') }}" class="brand" aria-label="FileCrypt home">
+            <span class="brand-name">File<em>Crypt</em></span>
+        </a>
+
+        <nav class="nav" id="nav" data-open="false" aria-label="Sections">
+            <a href="#top" class="nav-link is-active">Home</a>
+            <a href="#algorithms" class="nav-link">Algorithms</a>
+            <a href="#how" class="nav-link">How It Works</a>
+            <a href="#security" class="nav-link">Security</a>
+            <a href="#faq" class="nav-link">FAQ</a>
+        </nav>
+
+        <div class="topbar-actions">
+            <button class="icon-btn theme-toggle" id="themeToggle" type="button"
+                    aria-label="Switch colour theme">
+                <svg class="icon icon-sun"><use href="#i-sun"/></svg>
+                <svg class="icon icon-moon"><use href="#i-moon"/></svg>
+            </button>
+            <button class="icon-btn nav-toggle" id="navToggle" type="button"
+                    aria-label="Open menu" aria-expanded="false" aria-controls="nav">
+                <svg class="icon"><use href="#i-menu"/></svg>
+            </button>
+        </div>
+    </div>
+</header>
+
+<main id="top">
+    {% block content %}{% endblock %}
+</main>
+
+<footer class="footer">
+    <div class="shell footer-inner">
+        <span>&copy; {{ year }} FileCrypt — MIT licensed</span>
+        <div class="footer-links">
+            <a href="#algorithms">Algorithms</a>
+            <a href="#how">How It Works</a>
+            <a href="#security">Security</a>
+            <a href="#faq">FAQ</a>
+        </div>
+    </div>
+</footer>
+
+<script>
+(function () {
+    "use strict";
+
+    /* ---------------------------------------------------------- theme */
+    var root = document.documentElement;
+    document.getElementById("themeToggle").addEventListener("click", function () {
+        var dark = root.dataset.theme !== "dark";
+        root.classList.add("theme-switching");
+        root.dataset.theme = dark ? "dark" : "light";
+        try { localStorage.setItem("filecrypt-theme", dark ? "dark" : "light"); } catch (e) {}
+        // Two frames: one to apply the new colours, one to let them paint
+        // before transitions are allowed back.
+        requestAnimationFrame(function () {
+            requestAnimationFrame(function () {
+                root.classList.remove("theme-switching");
+            });
+        });
+    });
+
+    /* ------------------------------------------------- mobile menu */
+    var nav = document.getElementById("nav");
+    var navToggle = document.getElementById("navToggle");
+    navToggle.addEventListener("click", function () {
+        var open = nav.dataset.open !== "true";
+        nav.dataset.open = open ? "true" : "false";
+        navToggle.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+    nav.addEventListener("click", function (e) {
+        if (e.target.closest(".nav-link")) {
+            nav.dataset.open = "false";
+            navToggle.setAttribute("aria-expanded", "false");
+        }
+    });
+
+    /* --------------------------------- highlight the section in view */
+    var links = Array.prototype.slice.call(nav.querySelectorAll(".nav-link"));
+    var targets = links
+        .map(function (link) { return document.querySelector(link.getAttribute("href")); })
+        .filter(Boolean);
+
+    if ("IntersectionObserver" in window && targets.length) {
+        var observer = new IntersectionObserver(function (entries) {
+            entries.forEach(function (entry) {
+                if (!entry.isIntersecting) return;
+                links.forEach(function (link) {
+                    link.classList.toggle(
+                        "is-active",
+                        link.getAttribute("href") === "#" + entry.target.id
+                    );
+                });
+            });
+        }, { rootMargin: "-45% 0px -50% 0px" });
+        targets.forEach(function (t) { observer.observe(t); });
+    }
+})();
+</script>
+
+{% block scripts %}{% endblock %}
+</body>
+</html>

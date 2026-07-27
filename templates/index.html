@@ -1,0 +1,1014 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<!-- ═══════════════════════════════════════════════════════════════ hero -->
+<section class="shell hero">
+    <h1>Encrypt. Decrypt. <em>Verify.</em></h1>
+    <p>
+        Pick an algorithm, drop in any file, and download the encrypted result
+        with its key. No account, no storage, nothing kept once the response
+        leaves the server.
+    </p>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════ tool -->
+<section class="shell" style="padding-bottom: 4rem;">
+    <div class="tool">
+        <div class="tool-tabs" role="tablist">
+            <button class="tool-tab" id="tab-encrypt" role="tab"
+                    aria-selected="true" aria-controls="panel-encrypt">
+                <svg class="icon"><use href="#i-lock"/></svg> Encrypt File
+            </button>
+            <button class="tool-tab" id="tab-decrypt" role="tab"
+                    aria-selected="false" aria-controls="panel-decrypt">
+                <svg class="icon"><use href="#i-unlock"/></svg> Decrypt File
+            </button>
+        </div>
+
+        <!-- ─────────────────────────────────────────────── encrypt panel -->
+        <div class="tool-panel" id="panel-encrypt" role="tabpanel" aria-labelledby="tab-encrypt">
+            <div class="tool-grid">
+                <div>
+                    <form id="encryptForm">
+                        <div class="field">
+                            <label class="label" id="algorithmLabel" for="algorithmTrigger">Algorithm</label>
+                            <div class="combo" id="algorithmCombo" data-open="false">
+                                <button type="button" class="combo-trigger" id="algorithmTrigger"
+                                        aria-haspopup="listbox" aria-expanded="false"
+                                        aria-controls="algorithmList">
+                                    <span class="combo-value" id="algorithmValue">{{ default_algorithm_label }}</span>
+                                    <svg class="icon combo-chevron"><use href="#i-chevron"/></svg>
+                                </button>
+                                <ul class="combo-list" id="algorithmList" role="listbox"
+                                    aria-labelledby="algorithmLabel" tabindex="-1" hidden>
+                                    {% for a in algorithms %}
+                                    <li class="combo-option" id="algo-opt-{{ a.name }}" role="option"
+                                        data-value="{{ a.name }}"
+                                        data-label="{{ a.label }}"
+                                        data-summary="{{ a.summary }}"
+                                        data-notes="{{ a.notes }}"
+                                        data-educational="{{ '1' if a.educational else '' }}"
+                                        data-images-only="{{ '1' if a.images_only else '' }}"
+                                        aria-selected="{{ 'true' if a.name == default_algorithm else 'false' }}">
+                                        <span class="combo-option-main">
+                                            <span class="combo-option-label">
+                                                {{ a.label }}
+                                            </span>
+                                            <span class="combo-option-summary">{{ a.summary }}</span>
+                                        </span>
+                                        <svg class="icon combo-option-check"><use href="#i-check"/></svg>
+                                    </li>
+                                    {% endfor %}
+                                </ul>
+                            </div>
+                            <input type="hidden" id="algorithm" name="algorithm" value="{{ default_algorithm }}">
+                            <p class="hint" id="algorithmSummary"></p>
+                        </div>
+
+                        <div class="notice notice-warning" id="algorithmNotice" hidden>
+                            <svg class="icon"><use href="#i-alert"/></svg>
+                            <span id="algorithmNoticeText"></span>
+                        </div>
+
+                        <div class="field" style="margin-top: 1.25rem;">
+                            <div class="dropzone" id="encryptDrop" tabindex="0" role="button"
+                                 aria-label="Choose a file to encrypt">
+                                <svg class="icon icon-xl"><use href="#i-upload"/></svg>
+                                <span class="dropzone-title">Drag &amp; drop your file here</span>
+                                <span class="dropzone-sub">or click to browse</span>
+                                <span class="dropzone-note" id="encryptAccept">Any file type · up to {{ max_mb }} MB</span>
+                                <input type="file" id="encryptInput" name="file" hidden>
+                            </div>
+
+                            <div class="chosen" id="encryptChosen" hidden>
+                                <svg class="icon"><use href="#i-file"/></svg>
+                                <span class="chosen-name" id="encryptName"></span>
+                                <span class="chosen-size" id="encryptSize"></span>
+                                <button type="button" class="chosen-clear" id="encryptClear"
+                                        aria-label="Remove selected file">
+                                    <svg class="icon icon-sm"><use href="#i-x"/></svg>
+                                </button>
+                            </div>
+                        </div>
+
+                        <button type="submit" class="btn btn-primary btn-lg">
+                            <svg class="icon"><use href="#i-lock"/></svg> Encrypt File
+                        </button>
+                    </form>
+
+                    <div class="status status-info" id="encryptStatus" hidden></div>
+
+                    <div class="result" id="encryptResult" hidden>
+                        <div class="result-head">
+                            <svg class="icon"><use href="#i-check"/></svg>
+                            <div>
+                                <h3>Encrypted</h3>
+                                <p id="encryptResultMeta"></p>
+                            </div>
+                        </div>
+
+                        <div class="notice notice-danger">
+                            <svg class="icon"><use href="#i-key"/></svg>
+                            <span>
+                                Download <strong>both</strong> files. The key is the only way
+                                back — store it somewhere separate from the encrypted file.
+                            </span>
+                        </div>
+
+                        <div class="downloads">
+                            <a class="dl" id="downloadPayload" download>
+                                <span class="dl-icon"><svg class="icon"><use href="#i-file-lock"/></svg></span>
+                                <span class="dl-text">
+                                    <span class="dl-name" id="payloadName"></span>
+                                    <span class="dl-meta" id="payloadSize"></span>
+                                </span>
+                                <svg class="icon dl-go"><use href="#i-download"/></svg>
+                            </a>
+                            <a class="dl dl-key" id="downloadKey" download>
+                                <span class="dl-icon"><svg class="icon"><use href="#i-key"/></svg></span>
+                                <span class="dl-text">
+                                    <span class="dl-name" id="keyName"></span>
+                                    <span class="dl-meta" id="keySize"></span>
+                                </span>
+                                <svg class="icon dl-go"><use href="#i-download"/></svg>
+                            </a>
+                        </div>
+                    </div>
+                </div>
+
+                <aside class="tool-aside">
+                    <p class="aside-title">What you get back</p>
+                    <ul class="aside-list">
+                        <li>
+                            <svg class="icon"><use href="#i-file-lock"/></svg>
+                            <span>The encrypted file, ready to store or send anywhere.</span>
+                        </li>
+                        <li>
+                            <svg class="icon"><use href="#i-key"/></svg>
+                            <span>A <code>.key.json</code> holding the key, the algorithm, and a checksum.</span>
+                        </li>
+                        <li>
+                            <svg class="icon"><use href="#i-eraser"/></svg>
+                            <span>Nothing on the server. No copy of your file, no copy of your key.</span>
+                        </li>
+                    </ul>
+
+                    <p class="aside-title">Not sure which algorithm?</p>
+                    <p class="hint" style="margin-top:0">
+                        AES-256-GCM is the right answer almost always. See the
+                        <a href="#algorithms" style="color:var(--accent);font-weight:600">full
+                        comparison</a> for the rest.
+                    </p>
+                </aside>
+            </div>
+        </div>
+
+        <!-- ─────────────────────────────────────────────── decrypt panel -->
+        <div class="tool-panel" id="panel-decrypt" role="tabpanel" aria-labelledby="tab-decrypt" hidden>
+            <div class="tool-grid">
+                <div>
+                    <form id="decryptForm">
+                        <div class="field">
+                            <div class="dropzone dropzone-sm" id="payloadDrop" tabindex="0" role="button"
+                                 aria-label="Choose the encrypted file">
+                                <svg class="icon icon-xl"><use href="#i-file-lock"/></svg>
+                                <span>
+                                    <span class="dropzone-title">Drag &amp; drop encrypted file here</span><br>
+                                    <span class="dropzone-sub">or click to browse</span>
+                                </span>
+                                <input type="file" id="payloadInput" name="file" hidden>
+                            </div>
+                            <div class="chosen" id="payloadChosen" hidden>
+                                <svg class="icon"><use href="#i-file"/></svg>
+                                <span class="chosen-name" id="payloadChosenName"></span>
+                                <span class="chosen-size" id="payloadChosenSize"></span>
+                                <button type="button" class="chosen-clear" id="payloadClear"
+                                        aria-label="Remove selected file">
+                                    <svg class="icon icon-sm"><use href="#i-x"/></svg>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="field">
+                            <div class="label-row">
+                                <label class="label" for="keyText">Decryption key</label>
+                                <button type="button" class="link-subtle" id="keyHelpToggle">
+                                    <svg class="icon icon-sm"><use href="#i-info"/></svg>
+                                    What is a decryption key?
+                                </button>
+                            </div>
+
+                            <div class="notice notice-neutral" id="keyHelp" hidden
+                                 style="margin-bottom:.75rem">
+                                <svg class="icon"><use href="#i-info"/></svg>
+                                <span>
+                                    The <code>.key.json</code> you downloaded when you encrypted the
+                                    file. Drag &amp; drop it below, upload the file, or paste its JSON text.
+                                    It names the algorithm too, so there is nothing else to select.
+                                </span>
+                            </div>
+
+                            <div class="dropzone dropzone-sm" id="keyDrop" tabindex="0" role="button"
+                                 aria-label="Choose or drop the decryption key file">
+                                <svg class="icon icon-xl"><use href="#i-key"/></svg>
+                                <span>
+                                    <span class="dropzone-title">Drag &amp; drop key file here</span><br>
+                                    <span class="dropzone-sub">or click to browse (.key.json)</span>
+                                </span>
+                                <input type="file" id="keyInput" name="key_file"
+                                       accept=".json,application/json" hidden>
+                            </div>
+
+                            <div class="chosen" id="keyChosen" hidden style="margin-top:.75rem">
+                                <svg class="icon"><use href="#i-key"/></svg>
+                                <span class="chosen-name" id="keyChosenName"></span>
+                                <span class="chosen-size" id="keyChosenSize"></span>
+                                <button type="button" class="chosen-clear" id="keyClear"
+                                        aria-label="Remove key file">
+                                    <svg class="icon icon-sm"><use href="#i-x"/></svg>
+                                </button>
+                            </div>
+
+                            <div style="margin-top: .875rem;">
+                                <label class="label" for="keyText" style="font-weight: 500; font-size: .8125rem; color: var(--text-muted);">Or paste / drop key JSON text:</label>
+                                <textarea class="textarea" id="keyText" name="key_text"
+                                          spellcheck="false" autocomplete="off"
+                                          placeholder='{&#10;  "format": "filecrypt-key",&#10;  "algorithm": "aes",&#10;  ...&#10;}'></textarea>
+                            </div>
+                        </div>
+
+                        <button type="submit" class="btn btn-primary btn-lg">
+                            <svg class="icon"><use href="#i-unlock"/></svg> Decrypt File
+                        </button>
+                    </form>
+
+                    <div class="status status-info" id="decryptStatus" hidden></div>
+
+                    <div class="result" id="decryptResult" hidden>
+                        <div class="result-head">
+                            <svg class="icon"><use href="#i-check"/></svg>
+                            <div>
+                                <h3>Recovered</h3>
+                                <p id="decryptResultMeta"></p>
+                            </div>
+                        </div>
+                        <div class="downloads downloads-single">
+                            <a class="dl" id="downloadPlain" download>
+                                <span class="dl-icon"><svg class="icon"><use href="#i-file"/></svg></span>
+                                <span class="dl-text">
+                                    <span class="dl-name" id="plainName"></span>
+                                    <span class="dl-meta" id="plainSize"></span>
+                                </span>
+                                <svg class="icon dl-go"><use href="#i-download"/></svg>
+                            </a>
+                        </div>
+                    </div>
+                </div>
+
+                <aside class="tool-aside">
+                    <p class="aside-title">How verification works</p>
+                    <ul class="aside-list">
+                        <li>
+                            <svg class="icon"><use href="#i-fingerprint"/></svg>
+                            <span>The key file carries a SHA-256 of the original bytes.</span>
+                        </li>
+                        <li>
+                            <svg class="icon"><use href="#i-check"/></svg>
+                            <span>After decrypting, the result is hashed and compared.</span>
+                        </li>
+                        <li>
+                            <svg class="icon"><use href="#i-alert"/></svg>
+                            <span>A mismatch is reported as a wrong key — you never get handed a corrupt file silently.</span>
+                        </li>
+                    </ul>
+                </aside>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════ features -->
+<section class="section section-alt">
+    <div class="shell">
+        <div class="grid-4">
+            <div class="tile">
+                <div class="tile-icon"><svg class="icon icon-lg"><use href="#i-shield"/></svg></div>
+                <h3>Authenticated by default</h3>
+                <p>AES-256-GCM detects a wrong key or a modified file instead of returning garbage.</p>
+            </div>
+            <div class="tile">
+                <div class="tile-icon"><svg class="icon icon-lg"><use href="#i-eraser"/></svg></div>
+                <h3>Nothing is stored</h3>
+                <p>No database, no upload folder, no accounts. The request is handled in memory and forgotten.</p>
+            </div>
+            <div class="tile">
+                <div class="tile-icon"><svg class="icon icon-lg"><use href="#i-key"/></svg></div>
+                <h3>You hold the only key</h3>
+                <p>The key file is generated per file and handed to you. No copy is kept anywhere.</p>
+            </div>
+            <div class="tile">
+                <div class="tile-icon"><svg class="icon icon-lg"><use href="#i-layers"/></svg></div>
+                <h3>Eight algorithms</h3>
+                <p>Four production ciphers, three reversible demos, and a visual scheme you can print.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ═════════════════════════════════════════════════════════ algorithms -->
+<section class="section" id="algorithms">
+    <div class="shell">
+        <div class="section-head">
+            <span class="eyebrow">Algorithms</span>
+            <h2>Supported Encryption Algorithms</h2>
+            <p>
+                Choose from a range of encryption schemes for secure file encoding and decoding.
+            </p>
+        </div>
+
+        <div class="table-wrap">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th scope="col">Algorithm</th>
+                        <th scope="col">What it does</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for a in algorithms %}
+                    <tr>
+                        <td>{{ a.label }}</td>
+                        <td>
+                            {{ a.summary }}
+                            {% if a.notes %}<p>{{ a.notes }}</p>{% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════ how it works -->
+<section class="section section-alt" id="how">
+    <div class="shell">
+        <div class="section-head">
+            <span class="eyebrow">How It Works</span>
+            <h2>Three steps, no accounts</h2>
+        </div>
+
+        <div class="grid-3">
+            <div class="tile">
+                <div class="step-number">1</div>
+                <h3>Upload and choose</h3>
+                <p>
+                    Drop any file and pick an algorithm. The upload ceiling is
+                    {{ max_mb }} MB because everything is processed in memory.
+                </p>
+            </div>
+            <div class="tile">
+                <div class="step-number">2</div>
+                <h3>Download both files</h3>
+                <p>
+                    You get the encrypted file and a <code>.key.json</code>. Keep them
+                    apart — together they are just your original file.
+                </p>
+            </div>
+            <div class="tile">
+                <div class="step-number">3</div>
+                <h3>Decrypt whenever</h3>
+                <p>
+                    Bring both back. The key file names the algorithm and carries a
+                    checksum, so the result is verified before you download it.
+                </p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════── security -->
+<section class="section" id="security">
+    <div class="shell">
+        <div class="section-head">
+            <span class="eyebrow">Security</span>
+            <h2>What this does and does not protect</h2>
+            <p>Worth reading before you trust it with anything real.</p>
+        </div>
+
+        <div class="grid-3" style="margin-bottom:1.25rem">
+            <div class="tile">
+                <div class="tile-icon"><svg class="icon icon-lg"><use href="#i-server"/></svg></div>
+                <h3>Encryption runs on the server</h3>
+                <p>
+                    Your file is uploaded, encrypted in memory, and the response is sent.
+                    Nothing is written to disk. But the server does see your plaintext
+                    while it works — this is not end-to-end encryption.
+                </p>
+            </div>
+            <div class="tile">
+                <div class="tile-icon"><svg class="icon icon-lg"><use href="#i-eraser"/></svg></div>
+                <h3>No retention of any kind</h3>
+                <p>
+                    There is no database, no upload directory, and no session. Once the
+                    response is sent there is no copy of your file or your key
+                    anywhere on the server.
+                </p>
+            </div>
+            <div class="tile">
+                <div class="tile-icon"><svg class="icon icon-lg"><use href="#i-zap"/></svg></div>
+                <h3>Deploy it properly</h3>
+                <p>
+                    Ships with Flask's development server and no rate limiting. Put it
+                    behind HTTPS and a real WSGI server before exposing it to a network.
+                </p>
+            </div>
+        </div>
+
+        <div class="notice notice-danger">
+            <svg class="icon"><use href="#i-key"/></svg>
+            <span>
+                <strong>Lose the key file and the data is gone.</strong> There is no
+                recovery, no reset, and no copy. That is the direct consequence of
+                storing nothing.
+            </span>
+        </div>
+    </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════ faq -->
+<section class="section section-alt" id="faq">
+    <div class="shell">
+        <div class="section-head">
+            <span class="eyebrow">FAQ</span>
+            <h2>Questions worth asking</h2>
+        </div>
+
+        <div class="faq">
+            <details class="qa">
+                <summary>
+                    Is my file really encrypted in the browser?
+                    <svg class="icon"><use href="#i-chevron"/></svg>
+                </summary>
+                <div class="qa-body">
+                    <p>
+                        No, and it is worth being clear about that. The file is uploaded and
+                        encrypted on the server, then the result comes back to you. Nothing is
+                        stored, but a compromised server could read the file while it is being
+                        processed.
+                    </p>
+                    <p>
+                        If you need the server never to see your plaintext, the crypto has to
+                        run in the browser via the Web Crypto API. That is a different design.
+                    </p>
+                </div>
+            </details>
+
+            <details class="qa">
+                <summary>
+                    What happens if I lose the key file?
+                    <svg class="icon"><use href="#i-chevron"/></svg>
+                </summary>
+                <div class="qa-body">
+                    <p>
+                        The file stays encrypted forever. No account holds a backup, because
+                        there are no accounts. Keep the <code>.key.json</code> somewhere you
+                        trust — a password manager works well.
+                    </p>
+                </div>
+            </details>
+
+            <details class="qa">
+                <summary>
+                    Which algorithm should I pick?
+                    <svg class="icon"><use href="#i-chevron"/></svg>
+                </summary>
+                <div class="qa-body">
+                    <p>
+                        AES-256-GCM unless you have a specific reason otherwise. It is
+                        authenticated, fast, and handles any file type. Fernet and the hybrid
+                        RSA option are also solid choices.
+                    </p>
+                </div>
+            </details>
+
+            <details class="qa">
+                <summary>
+                    Why does visual cryptography behave differently?
+                    <svg class="icon"><use href="#i-chevron"/></svg>
+                </summary>
+                <div class="qa-body">
+                    <p>
+                        Because it is not a file cipher. It splits an image into two share
+                        images; either one alone is noise, and stacking them reveals the
+                        picture. You get a zip of both shares instead of an encrypted file.
+                    </p>
+                    <p>
+                        Stacking returns a black-and-white approximation at double the
+                        original size, not your original bytes. Print the shares on
+                        transparencies and overlay them — it works with no computer at all.
+                    </p>
+                </div>
+            </details>
+
+            <details class="qa">
+                <summary>
+                    How does it know my key is wrong?
+                    <svg class="icon"><use href="#i-chevron"/></svg>
+                </summary>
+                <div class="qa-body">
+                    <p>
+                        The key file stores a SHA-256 of the original file. After decryption
+                        the result is hashed and compared. AES, Fernet and RSA would catch a
+                        bad key on their own; the demo algorithms are raw transforms that
+                        would otherwise hand back plausible-looking garbage.
+                    </p>
+                </div>
+            </details>
+
+            <details class="qa">
+                <summary>
+                    Is there a file size limit?
+                    <svg class="icon"><use href="#i-chevron"/></svg>
+                </summary>
+                <div class="qa-body">
+                    <p>
+                        {{ max_mb }} MB by default, because a request briefly holds the file,
+                        its ciphertext, and the encoded response in memory at once. Raise it
+                        with the <code>MAX_UPLOAD_MB</code> environment variable.
+                    </p>
+                </div>
+            </details>
+        </div>
+    </div>
+</section>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+    "use strict";
+
+    var $ = function (id) { return document.getElementById(id); };
+
+    function formatSize(bytes) {
+        if (bytes < 1024) return bytes + " B";
+        var units = ["KB", "MB", "GB"];
+        var value = bytes / 1024;
+        var i = 0;
+        while (value >= 1024 && i < units.length - 1) { value /= 1024; i++; }
+        return value.toFixed(value < 10 ? 1 : 0) + " " + units[i];
+    }
+
+    /* Decoded in chunks so a large file does not build one enormous array. */
+    function base64ToBlob(b64) {
+        var binary = atob(b64);
+        var chunk = 0x8000;
+        var parts = [];
+        for (var offset = 0; offset < binary.length; offset += chunk) {
+            var slice = binary.slice(offset, offset + chunk);
+            var bytes = new Uint8Array(slice.length);
+            for (var i = 0; i < slice.length; i++) bytes[i] = slice.charCodeAt(i);
+            parts.push(bytes);
+        }
+        return new Blob(parts, { type: "application/octet-stream" });
+    }
+
+    /* Old object URLs are revoked so repeated runs do not pin memory. */
+    function attachDownload(anchor, blob, filename) {
+        if (anchor.dataset.url) URL.revokeObjectURL(anchor.dataset.url);
+        var url = URL.createObjectURL(blob);
+        anchor.dataset.url = url;
+        anchor.href = url;
+        anchor.download = filename;
+    }
+
+    function showStatus(el, message, kind) {
+        el.className = "status status-" + kind;
+        el.innerHTML = "";
+        if (kind === "info") {
+            var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+            svg.setAttribute("class", "icon spin");
+            var use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+            use.setAttribute("href", "#i-loader");
+            svg.appendChild(use);
+            el.appendChild(svg);
+        }
+        el.appendChild(document.createTextNode(message));
+        el.hidden = false;
+    }
+
+    function busy(form, isBusy, label) {
+        var button = form.querySelector("button[type=submit]");
+        button.disabled = isBusy;
+        if (isBusy) {
+            button.dataset.idle = button.innerHTML;
+            button.innerHTML =
+                '<svg class="icon spin"><use href="#i-loader"/></svg> ' + label;
+        } else if (button.dataset.idle) {
+            button.innerHTML = button.dataset.idle;
+        }
+    }
+
+    /* ------------------------------------------------------------ tabs */
+    var panels = { encrypt: $("panel-encrypt"), decrypt: $("panel-decrypt") };
+    var tabs = [$("tab-encrypt"), $("tab-decrypt")];
+    tabs.forEach(function (tab) {
+        tab.addEventListener("click", function () {
+            var target = tab.id.replace("tab-", "");
+            tabs.forEach(function (t) {
+                t.setAttribute("aria-selected", t === tab ? "true" : "false");
+            });
+            Object.keys(panels).forEach(function (name) {
+                panels[name].hidden = name !== target;
+            });
+        });
+    });
+
+    /* ------------------------------------------------------- dropzones */
+    function wireDropZone(zone, input, onPick) {
+        var open = function () { input.click(); };
+        zone.addEventListener("click", open);
+        zone.addEventListener("keydown", function (e) {
+            if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+        });
+        ["dragenter", "dragover"].forEach(function (type) {
+            zone.addEventListener(type, function (e) {
+                e.preventDefault();
+                zone.classList.add("is-over");
+            });
+        });
+        ["dragleave", "drop"].forEach(function (type) {
+            zone.addEventListener(type, function (e) {
+                e.preventDefault();
+                zone.classList.remove("is-over");
+            });
+        });
+        zone.addEventListener("drop", function (e) {
+            if (e.dataTransfer.files.length) {
+                input.files = e.dataTransfer.files;
+                onPick(e.dataTransfer.files[0]);
+            }
+        });
+        input.addEventListener("change", function () {
+            if (input.files.length) onPick(input.files[0]);
+        });
+    }
+
+    function wireClear(button, input, row) {
+        button.addEventListener("click", function () {
+            input.value = "";
+            row.hidden = true;
+        });
+    }
+
+    /* ---------------------------------------------------- custom listbox */
+    /* Stands in for a native <select>. Needed because the browser draws a
+       native select's open-state colours itself -- on a dark page that means
+       a jarring light system menu no amount of CSS here can reach. */
+    function initCombo(root, hiddenInput) {
+        var trigger = root.querySelector(".combo-trigger");
+        var list = root.querySelector(".combo-list");
+        var valueEl = root.querySelector(".combo-value");
+        var options = Array.prototype.slice.call(list.querySelectorAll(".combo-option"));
+
+        function indexOfValue(value) {
+            for (var i = 0; i < options.length; i++) {
+                if (options[i].dataset.value === value) return i;
+            }
+            return -1;
+        }
+
+        var activeIndex = Math.max(0, indexOfValue(hiddenInput.value));
+
+        function setActive(index, opts) {
+            opts = opts || {};
+            activeIndex = (index + options.length) % options.length;
+            options.forEach(function (opt, i) {
+                opt.classList.toggle("is-active", i === activeIndex);
+            });
+            list.setAttribute("aria-activedescendant", options[activeIndex].id);
+            if (opts.scroll !== false) {
+                options[activeIndex].scrollIntoView({ block: "nearest" });
+            }
+        }
+
+        function isOpen() { return root.dataset.open === "true"; }
+
+        function open() {
+            if (isOpen()) return;
+            root.dataset.open = "true";
+            list.hidden = false;
+            trigger.setAttribute("aria-expanded", "true");
+            setActive(Math.max(0, indexOfValue(hiddenInput.value)), { scroll: false });
+            list.focus();
+            document.addEventListener("click", onDocumentClick, true);
+        }
+
+        function close(opts) {
+            opts = opts || {};
+            if (!isOpen()) return;
+            root.dataset.open = "false";
+            list.hidden = true;
+            trigger.setAttribute("aria-expanded", "false");
+            document.removeEventListener("click", onDocumentClick, true);
+            if (opts.focusTrigger !== false) trigger.focus();
+        }
+
+        function onDocumentClick(e) {
+            if (!root.contains(e.target)) close({ focusTrigger: false });
+        }
+
+        function selectOption(opt) {
+            options.forEach(function (o) {
+                o.setAttribute("aria-selected", o === opt ? "true" : "false");
+            });
+            hiddenInput.value = opt.dataset.value;
+            valueEl.textContent = opt.dataset.label;
+            close();
+            root.dispatchEvent(new CustomEvent("combo-change"));
+        }
+
+        trigger.addEventListener("click", function () {
+            isOpen() ? close() : open();
+        });
+
+        trigger.addEventListener("keydown", function (e) {
+            if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                var wasOpen = isOpen();
+                open();
+                if (!wasOpen && e.key === "ArrowUp") setActive(activeIndex - 1);
+            }
+        });
+
+        var typeahead = "";
+        var typeaheadTimer = null;
+
+        list.addEventListener("keydown", function (e) {
+            switch (e.key) {
+                case "ArrowDown":
+                    e.preventDefault();
+                    setActive(activeIndex + 1);
+                    break;
+                case "ArrowUp":
+                    e.preventDefault();
+                    setActive(activeIndex - 1);
+                    break;
+                case "Home":
+                    e.preventDefault();
+                    setActive(0);
+                    break;
+                case "End":
+                    e.preventDefault();
+                    setActive(options.length - 1);
+                    break;
+                case "Enter":
+                case " ":
+                    e.preventDefault();
+                    selectOption(options[activeIndex]);
+                    break;
+                case "Escape":
+                    e.preventDefault();
+                    close();
+                    break;
+                case "Tab":
+                    close({ focusTrigger: false });
+                    break;
+                default:
+                    if (e.key.length === 1 && /[a-z0-9]/i.test(e.key)) {
+                        typeahead += e.key.toLowerCase();
+                        clearTimeout(typeaheadTimer);
+                        typeaheadTimer = setTimeout(function () { typeahead = ""; }, 600);
+                        for (var step = 1; step <= options.length; step++) {
+                            var idx = (activeIndex + step) % options.length;
+                            if (options[idx].dataset.label.toLowerCase().indexOf(typeahead) === 0) {
+                                setActive(idx);
+                                break;
+                            }
+                        }
+                    }
+            }
+        });
+
+        options.forEach(function (opt, i) {
+            opt.addEventListener("click", function () { selectOption(opt); });
+            opt.addEventListener("mousemove", function () {
+                if (activeIndex !== i) setActive(i, { scroll: false });
+            });
+        });
+
+        valueEl.textContent = options[activeIndex].dataset.label;
+
+        return {
+            get selectedOption() { return options[indexOfValue(hiddenInput.value)]; },
+            onChange: function (fn) { root.addEventListener("combo-change", fn); }
+        };
+    }
+
+    /* --------------------------------------------------------- encrypt */
+    var algorithm = $("algorithm");
+    var encryptInput = $("encryptInput");
+    var encryptForm = $("encryptForm");
+    var encryptStatus = $("encryptStatus");
+    var encryptResult = $("encryptResult");
+
+    var algorithmCombo = initCombo($("algorithmCombo"), algorithm);
+
+    function refreshAlgorithm() {
+        var option = algorithmCombo.selectedOption;
+        $("algorithmSummary").textContent = option.dataset.summary || "";
+
+        var messages = [];
+        if (option.dataset.educational) {
+            messages.push(
+                "This is a demonstration of the idea, not reviewed cryptography. It " +
+                "round-trips your file faithfully, but do not rely on it to protect " +
+                "anything that matters."
+            );
+        }
+        if (option.dataset.notes) messages.push(option.dataset.notes);
+
+        $("algorithmNotice").hidden = messages.length === 0;
+        $("algorithmNoticeText").textContent = messages.join(" ");
+
+        var imagesOnly = Boolean(option.dataset.imagesOnly);
+        encryptInput.accept = imagesOnly ? "image/*" : "";
+        $("encryptAccept").textContent = imagesOnly
+            ? "Images only for this algorithm · up to {{ max_mb }} MB"
+            : "Any file type · up to {{ max_mb }} MB";
+    }
+
+    algorithmCombo.onChange(refreshAlgorithm);
+    refreshAlgorithm();
+
+    wireDropZone($("encryptDrop"), encryptInput, function (file) {
+        $("encryptName").textContent = file.name;
+        $("encryptSize").textContent = formatSize(file.size);
+        $("encryptChosen").hidden = false;
+        encryptStatus.hidden = true;
+    });
+    wireClear($("encryptClear"), encryptInput, $("encryptChosen"));
+
+    encryptForm.addEventListener("submit", function (event) {
+        event.preventDefault();
+        if (!encryptInput.files.length) {
+            showStatus(encryptStatus, "Choose a file first.", "error");
+            return;
+        }
+
+        var body = new FormData();
+        body.append("file", encryptInput.files[0]);
+        body.append("algorithm", algorithm.value);
+
+        encryptResult.hidden = true;
+        showStatus(encryptStatus, "Encrypting…", "info");
+        busy(encryptForm, true, "Encrypting…");
+
+        fetch("/encrypt", { method: "POST", body: body })
+            .then(function (response) {
+                return response.json().then(function (data) {
+                    return { ok: response.ok, data: data };
+                });
+            })
+            .then(function (result) {
+                if (!result.ok) {
+                    showStatus(encryptStatus, result.data.error || "Encryption failed.", "error");
+                    return;
+                }
+                var data = result.data;
+
+                attachDownload($("downloadPayload"), base64ToBlob(data.encrypted.data),
+                               data.encrypted.filename);
+                $("payloadName").textContent = data.encrypted.filename;
+                $("payloadSize").textContent = formatSize(data.encrypted.size);
+
+                attachDownload($("downloadKey"), base64ToBlob(data.key.data),
+                               data.key.filename);
+                $("keyName").textContent = data.key.filename;
+                $("keySize").textContent = formatSize(data.key.size);
+
+                $("encryptResultMeta").textContent = data.lossy
+                    ? data.algorithm_label + " — stacking the shares returns a " +
+                      "black-and-white approximation, not the original file."
+                    : data.algorithm_label;
+
+                encryptStatus.hidden = true;
+                encryptResult.hidden = false;
+            })
+            .catch(function (error) {
+                showStatus(encryptStatus, "Could not reach the server: " + error.message, "error");
+            })
+            .then(function () { busy(encryptForm, false); });
+    });
+
+    /* --------------------------------------------------------- decrypt */
+    var payloadInput = $("payloadInput");
+    var keyInput = $("keyInput");
+    var keyText = $("keyText");
+    var decryptForm = $("decryptForm");
+    var decryptStatus = $("decryptStatus");
+    var decryptResult = $("decryptResult");
+
+    $("keyHelpToggle").addEventListener("click", function () {
+        $("keyHelp").hidden = !$("keyHelp").hidden;
+    });
+
+    wireDropZone($("payloadDrop"), payloadInput, function (file) {
+        $("payloadChosenName").textContent = file.name;
+        $("payloadChosenSize").textContent = formatSize(file.size);
+        $("payloadChosen").hidden = false;
+        decryptStatus.hidden = true;
+    });
+    wireClear($("payloadClear"), payloadInput, $("payloadChosen"));
+
+    function handleKeyFile(file) {
+        $("keyChosenName").textContent = file.name;
+        $("keyChosenSize").textContent = formatSize(file.size);
+        $("keyChosen").hidden = false;
+        decryptStatus.hidden = true;
+
+        var reader = new FileReader();
+        reader.onload = function (e) {
+            keyText.value = e.target.result;
+        };
+        reader.readAsText(file);
+    }
+
+    wireDropZone($("keyDrop"), keyInput, handleKeyFile);
+    wireClear($("keyClear"), keyInput, $("keyChosen"));
+
+    /* Support dragging and dropping key file directly onto keyText textarea */
+    ["dragenter", "dragover"].forEach(function (type) {
+        keyText.addEventListener(type, function (e) {
+            e.preventDefault();
+            keyText.classList.add("is-over");
+        });
+    });
+    ["dragleave", "drop"].forEach(function (type) {
+        keyText.addEventListener(type, function (e) {
+            e.preventDefault();
+            keyText.classList.remove("is-over");
+        });
+    });
+    keyText.addEventListener("drop", function (e) {
+        if (e.dataTransfer.files.length) {
+            keyInput.files = e.dataTransfer.files;
+            handleKeyFile(e.dataTransfer.files[0]);
+        }
+    });
+
+    decryptForm.addEventListener("submit", function (event) {
+        event.preventDefault();
+
+        if (!payloadInput.files.length) {
+            showStatus(decryptStatus, "Choose the encrypted file.", "error");
+            return;
+        }
+        if (!keyInput.files.length && !keyText.value.trim()) {
+            showStatus(decryptStatus, "Paste your key, or upload the .key.json file.", "error");
+            return;
+        }
+
+        var body = new FormData();
+        body.append("file", payloadInput.files[0]);
+        if (keyInput.files.length) {
+            body.append("key_file", keyInput.files[0]);
+        } else {
+            body.append("key_text", keyText.value);
+        }
+
+        decryptResult.hidden = true;
+        showStatus(decryptStatus, "Decrypting…", "info");
+        busy(decryptForm, true, "Decrypting…");
+
+        fetch("/decrypt", { method: "POST", body: body })
+            .then(function (response) {
+                /* Success streams the file back; failure arrives as JSON. */
+                if (!response.ok) {
+                    return response.json()
+                        .catch(function () { return {}; })
+                        .then(function (data) {
+                            showStatus(decryptStatus, data.error || "Decryption failed.", "error");
+                        });
+                }
+                var name = response.headers.get("X-Original-Filename") || "recovered";
+                return response.blob().then(function (blob) {
+                    attachDownload($("downloadPlain"), blob, name);
+                    $("plainName").textContent = name;
+                    $("plainSize").textContent = formatSize(blob.size);
+                    $("decryptResultMeta").textContent = "Checksum matched the key file.";
+                    decryptStatus.hidden = true;
+                    decryptResult.hidden = false;
+                });
+            })
+            .catch(function (error) {
+                showStatus(decryptStatus, "Could not reach the server: " + error.message, "error");
+            })
+            .then(function () { busy(decryptForm, false); });
+    });
+})();
+</script>
+{% endblock %}
