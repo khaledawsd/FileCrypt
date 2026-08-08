@@ -1304,3 +1304,98 @@ svg { display: block; }
 
     .footer-inner { justify-content: center; text-align: center; }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Utilities and controls added alongside passphrase mode.
+
+   The spacing helpers below replace style="" attributes that used to sit in
+   the templates. They are not decoration for its own sake: a Content-Security-
+   Policy of style-src 'self' blocks inline style attributes outright, so every
+   one of them had to become a class for the policy to hold.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+.sprite        { position: absolute; }
+.shell-tool    { padding-bottom: 4rem; }
+.field-gap     { margin-top: 1.25rem; }
+.field-stack   { margin-top: .875rem; }
+.chosen-gap    { margin-top: .75rem; }
+.notice-below  { margin-bottom: .75rem; }
+.grid-below    { margin-bottom: 1.25rem; }
+.hint-flush    { margin-top: 0; }
+
+.link-accent {
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.label-soft {
+    font-weight: 500;
+    font-size: .8125rem;
+    color: var(--text-muted);
+}
+
+/* ------------------------------------------------- key file / passphrase */
+
+.segmented {
+    display: inline-flex;
+    gap: 3px;
+    padding: 3px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-2);
+}
+
+.segment {
+    display: inline-flex;
+    align-items: center;
+    gap: .4375rem;
+    padding: .5rem .875rem;
+    border: none;
+    border-radius: calc(var(--radius) - 4px);
+    background: transparent;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: .875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background .15s, color .15s;
+}
+
+.segment:hover:not(:disabled):not(.is-selected) { color: var(--text); }
+
+.segment.is-selected {
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: 0 1px 2px rgb(0 0 0 / .08);
+}
+
+.segment:disabled {
+    opacity: .45;
+    cursor: not-allowed;
+}
+
+.segment:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+/* ------------------------------------------------------- upload progress */
+/* Only meaningful for the upload leg. Server-side work reports itself through
+   the status line instead, because its duration is not knowable in advance. */
+
+.progress {
+    margin-top: 1rem;
+    height: 6px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--surface-2);
+    overflow: hidden;
+}
+
+.progress-bar {
+    width: 0;
+    height: 100%;
+    border-radius: 999px;
+    background: var(--accent);
+    transition: width .12s linear;
+}

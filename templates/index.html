@@ -13,7 +13,12 @@
 </section>
 
 <!-- ═══════════════════════════════════════════════════════════════ tool -->
-<section class="shell" style="padding-bottom: 4rem;">
+<section class="shell shell-tool">
+    <!-- The script is a static file now, so server-side values it needs reach
+         it through here rather than through Jinja interpolation. -->
+    <div id="appConfig" hidden
+         data-max-mb="{{ max_mb }}"
+         data-min-passphrase="{{ min_passphrase }}"></div>
     <div class="tool">
         <div class="tool-tabs" role="tablist">
             <button class="tool-tab" id="tab-encrypt" role="tab"
@@ -50,6 +55,7 @@
                                         data-notes="{{ a.notes }}"
                                         data-educational="{{ '1' if a.educational else '' }}"
                                         data-images-only="{{ '1' if a.images_only else '' }}"
+                                        data-supports-passphrase="{{ '1' if a.supports_passphrase else '' }}"
                                         aria-selected="{{ 'true' if a.name == default_algorithm else 'false' }}">
                                         <span class="combo-option-main">
                                             <span class="combo-option-label">
@@ -71,7 +77,36 @@
                             <span id="algorithmNoticeText"></span>
                         </div>
 
-                        <div class="field" style="margin-top: 1.25rem;">
+                        <div class="field field-gap">
+                            <span class="label" id="modeLabel">Protect with</span>
+                            <div class="segmented" role="radiogroup" aria-labelledby="modeLabel">
+                                <button type="button" class="segment is-selected" id="modeKeyfile"
+                                        role="radio" aria-checked="true">
+                                    <svg class="icon icon-sm"><use href="#i-key"/></svg> A key file
+                                </button>
+                                <button type="button" class="segment" id="modePassphrase"
+                                        role="radio" aria-checked="false">
+                                    <svg class="icon icon-sm"><use href="#i-lock"/></svg> A passphrase
+                                </button>
+                            </div>
+                            <p class="hint" id="modeHint"></p>
+                        </div>
+
+                        <div class="field field-gap" id="passphraseField" hidden>
+                            <label class="label" for="passphrase">Passphrase</label>
+                            <input class="input" type="password" id="passphrase" name="passphrase"
+                                   autocomplete="new-password" spellcheck="false"
+                                   placeholder="At least {{ min_passphrase }} characters">
+                            <div class="notice notice-danger">
+                                <svg class="icon"><use href="#i-alert"/></svg>
+                                <span>
+                                    There is no reset and no recovery. Forget this passphrase and
+                                    the file stays encrypted forever.
+                                </span>
+                            </div>
+                        </div>
+
+                        <div class="field field-gap">
                             <div class="dropzone" id="encryptDrop" tabindex="0" role="button"
                                  aria-label="Choose a file to encrypt">
                                 <svg class="icon icon-xl"><use href="#i-upload"/></svg>
@@ -97,6 +132,9 @@
                         </button>
                     </form>
 
+                    <div class="progress" id="encryptProgress" hidden>
+                        <div class="progress-bar" id="encryptProgressBar"></div>
+                    </div>
                     <div class="status status-info" id="encryptStatus" hidden></div>
 
                     <div class="result" id="encryptResult" hidden>
@@ -108,7 +146,7 @@
                             </div>
                         </div>
 
-                        <div class="notice notice-danger">
+                        <div class="notice notice-danger" id="keyfileNotice">
                             <svg class="icon"><use href="#i-key"/></svg>
                             <span>
                                 Download <strong>both</strong> files. The key is the only way
@@ -116,7 +154,15 @@
                             </span>
                         </div>
 
-                        <div class="downloads">
+                        <div class="notice notice-neutral" id="passphraseNotice" hidden>
+                            <svg class="icon"><use href="#i-lock"/></svg>
+                            <span>
+                                One file, and it carries everything except the secret. There is no
+                                key file to keep — your passphrase is the whole of it.
+                            </span>
+                        </div>
+
+                        <div class="downloads" id="encryptDownloads">
                             <a class="dl" id="downloadPayload" download>
                                 <span class="dl-icon"><svg class="icon"><use href="#i-file-lock"/></svg></span>
                                 <span class="dl-text">
@@ -146,7 +192,13 @@
                         </li>
                         <li>
                             <svg class="icon"><use href="#i-key"/></svg>
-                            <span>A <code>.key.json</code> holding the key, the algorithm, and a checksum.</span>
+                            <span>In key-file mode, a <code>.key.json</code> holding the key, the
+                                  algorithm, and a checksum.</span>
+                        </li>
+                        <li>
+                            <svg class="icon"><use href="#i-lock"/></svg>
+                            <span>In passphrase mode, nothing else at all — the file carries its
+                                  own header and the key comes from what you remember.</span>
                         </li>
                         <li>
                             <svg class="icon"><use href="#i-eraser"/></svg>
@@ -155,10 +207,9 @@
                     </ul>
 
                     <p class="aside-title">Not sure which algorithm?</p>
-                    <p class="hint" style="margin-top:0">
+                    <p class="hint hint-flush">
                         AES-256-GCM is the right answer almost always. See the
-                        <a href="#algorithms" style="color:var(--accent);font-weight:600">full
-                        comparison</a> for the rest.
+                        <a href="#algorithms" class="link-accent">full comparison</a> for the rest.
                     </p>
                 </aside>
             </div>
@@ -190,7 +241,29 @@
                             </div>
                         </div>
 
-                        <div class="field">
+                        <!-- Which of these three is shown depends on the file: the page
+                             reads its first bytes on pick and asks only for what that
+                             particular file actually needs. -->
+                        <div class="notice notice-neutral" id="noKeyNeeded" hidden>
+                            <svg class="icon"><use href="#i-info"/></svg>
+                            <span>
+                                These are visual cryptography shares. The shares themselves are
+                                the secret, so there is no key to supply — just decrypt.
+                            </span>
+                        </div>
+
+                        <div class="field" id="decryptPassphraseField" hidden>
+                            <label class="label" for="decryptPassphrase">Passphrase</label>
+                            <input class="input" type="password" id="decryptPassphrase"
+                                   name="passphrase" autocomplete="current-password"
+                                   spellcheck="false"
+                                   placeholder="The passphrase this file was encrypted with">
+                            <p class="hint">
+                                This file carries its own header, so it needs no key file.
+                            </p>
+                        </div>
+
+                        <div class="field" id="keyBlock">
                             <div class="label-row">
                                 <label class="label" for="keyText">Decryption key</label>
                                 <button type="button" class="link-subtle" id="keyHelpToggle">
@@ -199,8 +272,7 @@
                                 </button>
                             </div>
 
-                            <div class="notice notice-neutral" id="keyHelp" hidden
-                                 style="margin-bottom:.75rem">
+                            <div class="notice notice-neutral notice-below" id="keyHelp" hidden>
                                 <svg class="icon"><use href="#i-info"/></svg>
                                 <span>
                                     The <code>.key.json</code> you downloaded when you encrypted the
@@ -220,7 +292,7 @@
                                        accept=".json,application/json" hidden>
                             </div>
 
-                            <div class="chosen" id="keyChosen" hidden style="margin-top:.75rem">
+                            <div class="chosen chosen-gap" id="keyChosen" hidden>
                                 <svg class="icon"><use href="#i-key"/></svg>
                                 <span class="chosen-name" id="keyChosenName"></span>
                                 <span class="chosen-size" id="keyChosenSize"></span>
@@ -230,8 +302,8 @@
                                 </button>
                             </div>
 
-                            <div style="margin-top: .875rem;">
-                                <label class="label" for="keyText" style="font-weight: 500; font-size: .8125rem; color: var(--text-muted);">Or paste / drop key JSON text:</label>
+                            <div class="field-stack">
+                                <label class="label label-soft" for="keyText">Or paste / drop key JSON text:</label>
                                 <textarea class="textarea" id="keyText" name="key_text"
                                           spellcheck="false" autocomplete="off"
                                           placeholder='{&#10;  "format": "filecrypt-key",&#10;  "algorithm": "aes",&#10;  ...&#10;}'></textarea>
@@ -243,6 +315,9 @@
                         </button>
                     </form>
 
+                    <div class="progress" id="decryptProgress" hidden>
+                        <div class="progress-bar" id="decryptProgressBar"></div>
+                    </div>
                     <div class="status status-info" id="decryptStatus" hidden></div>
 
                     <div class="result" id="decryptResult" hidden>
@@ -271,15 +346,19 @@
                     <ul class="aside-list">
                         <li>
                             <svg class="icon"><use href="#i-fingerprint"/></svg>
-                            <span>The key file carries a SHA-256 of the original bytes.</span>
+                            <span>A key file carries a SHA-256 of the original bytes. After
+                                  decrypting, the result is hashed and compared.</span>
                         </li>
                         <li>
-                            <svg class="icon"><use href="#i-check"/></svg>
-                            <span>After decrypting, the result is hashed and compared.</span>
+                            <svg class="icon"><use href="#i-shield"/></svg>
+                            <span>A passphrase file carries a MAC instead, checked
+                                  <em>before</em> decrypting — so a wrong passphrase costs you
+                                  nothing but the attempt.</span>
                         </li>
                         <li>
                             <svg class="icon"><use href="#i-alert"/></svg>
-                            <span>A mismatch is reported as a wrong key — you never get handed a corrupt file silently.</span>
+                            <span>Either way a mismatch is reported — you never get handed a
+                                  corrupt file silently, and the page tells you which check ran.</span>
                         </li>
                     </ul>
                 </aside>
@@ -397,7 +476,7 @@
             <p>Worth reading before you trust it with anything real.</p>
         </div>
 
-        <div class="grid-3" style="margin-bottom:1.25rem">
+        <div class="grid-3 grid-below">
             <div class="tile">
                 <div class="tile-icon"><svg class="icon icon-lg"><use href="#i-server"/></svg></div>
                 <h3>Encryption runs on the server</h3>
@@ -547,468 +626,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script>
-(function () {
-    "use strict";
-
-    var $ = function (id) { return document.getElementById(id); };
-
-    function formatSize(bytes) {
-        if (bytes < 1024) return bytes + " B";
-        var units = ["KB", "MB", "GB"];
-        var value = bytes / 1024;
-        var i = 0;
-        while (value >= 1024 && i < units.length - 1) { value /= 1024; i++; }
-        return value.toFixed(value < 10 ? 1 : 0) + " " + units[i];
-    }
-
-    /* Decoded in chunks so a large file does not build one enormous array. */
-    function base64ToBlob(b64) {
-        var binary = atob(b64);
-        var chunk = 0x8000;
-        var parts = [];
-        for (var offset = 0; offset < binary.length; offset += chunk) {
-            var slice = binary.slice(offset, offset + chunk);
-            var bytes = new Uint8Array(slice.length);
-            for (var i = 0; i < slice.length; i++) bytes[i] = slice.charCodeAt(i);
-            parts.push(bytes);
-        }
-        return new Blob(parts, { type: "application/octet-stream" });
-    }
-
-    /* Old object URLs are revoked so repeated runs do not pin memory. */
-    function attachDownload(anchor, blob, filename) {
-        if (anchor.dataset.url) URL.revokeObjectURL(anchor.dataset.url);
-        var url = URL.createObjectURL(blob);
-        anchor.dataset.url = url;
-        anchor.href = url;
-        anchor.download = filename;
-    }
-
-    function showStatus(el, message, kind) {
-        el.className = "status status-" + kind;
-        el.innerHTML = "";
-        if (kind === "info") {
-            var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-            svg.setAttribute("class", "icon spin");
-            var use = document.createElementNS("http://www.w3.org/2000/svg", "use");
-            use.setAttribute("href", "#i-loader");
-            svg.appendChild(use);
-            el.appendChild(svg);
-        }
-        el.appendChild(document.createTextNode(message));
-        el.hidden = false;
-    }
-
-    function busy(form, isBusy, label) {
-        var button = form.querySelector("button[type=submit]");
-        button.disabled = isBusy;
-        if (isBusy) {
-            button.dataset.idle = button.innerHTML;
-            button.innerHTML =
-                '<svg class="icon spin"><use href="#i-loader"/></svg> ' + label;
-        } else if (button.dataset.idle) {
-            button.innerHTML = button.dataset.idle;
-        }
-    }
-
-    /* ------------------------------------------------------------ tabs */
-    var panels = { encrypt: $("panel-encrypt"), decrypt: $("panel-decrypt") };
-    var tabs = [$("tab-encrypt"), $("tab-decrypt")];
-    tabs.forEach(function (tab) {
-        tab.addEventListener("click", function () {
-            var target = tab.id.replace("tab-", "");
-            tabs.forEach(function (t) {
-                t.setAttribute("aria-selected", t === tab ? "true" : "false");
-            });
-            Object.keys(panels).forEach(function (name) {
-                panels[name].hidden = name !== target;
-            });
-        });
-    });
-
-    /* ------------------------------------------------------- dropzones */
-    function wireDropZone(zone, input, onPick) {
-        var open = function () { input.click(); };
-        zone.addEventListener("click", open);
-        zone.addEventListener("keydown", function (e) {
-            if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
-        });
-        ["dragenter", "dragover"].forEach(function (type) {
-            zone.addEventListener(type, function (e) {
-                e.preventDefault();
-                zone.classList.add("is-over");
-            });
-        });
-        ["dragleave", "drop"].forEach(function (type) {
-            zone.addEventListener(type, function (e) {
-                e.preventDefault();
-                zone.classList.remove("is-over");
-            });
-        });
-        zone.addEventListener("drop", function (e) {
-            if (e.dataTransfer.files.length) {
-                input.files = e.dataTransfer.files;
-                onPick(e.dataTransfer.files[0]);
-            }
-        });
-        input.addEventListener("change", function () {
-            if (input.files.length) onPick(input.files[0]);
-        });
-    }
-
-    function wireClear(button, input, row) {
-        button.addEventListener("click", function () {
-            input.value = "";
-            row.hidden = true;
-        });
-    }
-
-    /* ---------------------------------------------------- custom listbox */
-    /* Stands in for a native <select>. Needed because the browser draws a
-       native select's open-state colours itself -- on a dark page that means
-       a jarring light system menu no amount of CSS here can reach. */
-    function initCombo(root, hiddenInput) {
-        var trigger = root.querySelector(".combo-trigger");
-        var list = root.querySelector(".combo-list");
-        var valueEl = root.querySelector(".combo-value");
-        var options = Array.prototype.slice.call(list.querySelectorAll(".combo-option"));
-
-        function indexOfValue(value) {
-            for (var i = 0; i < options.length; i++) {
-                if (options[i].dataset.value === value) return i;
-            }
-            return -1;
-        }
-
-        var activeIndex = Math.max(0, indexOfValue(hiddenInput.value));
-
-        function setActive(index, opts) {
-            opts = opts || {};
-            activeIndex = (index + options.length) % options.length;
-            options.forEach(function (opt, i) {
-                opt.classList.toggle("is-active", i === activeIndex);
-            });
-            list.setAttribute("aria-activedescendant", options[activeIndex].id);
-            if (opts.scroll !== false) {
-                options[activeIndex].scrollIntoView({ block: "nearest" });
-            }
-        }
-
-        function isOpen() { return root.dataset.open === "true"; }
-
-        function open() {
-            if (isOpen()) return;
-            root.dataset.open = "true";
-            list.hidden = false;
-            trigger.setAttribute("aria-expanded", "true");
-            setActive(Math.max(0, indexOfValue(hiddenInput.value)), { scroll: false });
-            list.focus();
-            document.addEventListener("click", onDocumentClick, true);
-        }
-
-        function close(opts) {
-            opts = opts || {};
-            if (!isOpen()) return;
-            root.dataset.open = "false";
-            list.hidden = true;
-            trigger.setAttribute("aria-expanded", "false");
-            document.removeEventListener("click", onDocumentClick, true);
-            if (opts.focusTrigger !== false) trigger.focus();
-        }
-
-        function onDocumentClick(e) {
-            if (!root.contains(e.target)) close({ focusTrigger: false });
-        }
-
-        function selectOption(opt) {
-            options.forEach(function (o) {
-                o.setAttribute("aria-selected", o === opt ? "true" : "false");
-            });
-            hiddenInput.value = opt.dataset.value;
-            valueEl.textContent = opt.dataset.label;
-            close();
-            root.dispatchEvent(new CustomEvent("combo-change"));
-        }
-
-        trigger.addEventListener("click", function () {
-            isOpen() ? close() : open();
-        });
-
-        trigger.addEventListener("keydown", function (e) {
-            if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                var wasOpen = isOpen();
-                open();
-                if (!wasOpen && e.key === "ArrowUp") setActive(activeIndex - 1);
-            }
-        });
-
-        var typeahead = "";
-        var typeaheadTimer = null;
-
-        list.addEventListener("keydown", function (e) {
-            switch (e.key) {
-                case "ArrowDown":
-                    e.preventDefault();
-                    setActive(activeIndex + 1);
-                    break;
-                case "ArrowUp":
-                    e.preventDefault();
-                    setActive(activeIndex - 1);
-                    break;
-                case "Home":
-                    e.preventDefault();
-                    setActive(0);
-                    break;
-                case "End":
-                    e.preventDefault();
-                    setActive(options.length - 1);
-                    break;
-                case "Enter":
-                case " ":
-                    e.preventDefault();
-                    selectOption(options[activeIndex]);
-                    break;
-                case "Escape":
-                    e.preventDefault();
-                    close();
-                    break;
-                case "Tab":
-                    close({ focusTrigger: false });
-                    break;
-                default:
-                    if (e.key.length === 1 && /[a-z0-9]/i.test(e.key)) {
-                        typeahead += e.key.toLowerCase();
-                        clearTimeout(typeaheadTimer);
-                        typeaheadTimer = setTimeout(function () { typeahead = ""; }, 600);
-                        for (var step = 1; step <= options.length; step++) {
-                            var idx = (activeIndex + step) % options.length;
-                            if (options[idx].dataset.label.toLowerCase().indexOf(typeahead) === 0) {
-                                setActive(idx);
-                                break;
-                            }
-                        }
-                    }
-            }
-        });
-
-        options.forEach(function (opt, i) {
-            opt.addEventListener("click", function () { selectOption(opt); });
-            opt.addEventListener("mousemove", function () {
-                if (activeIndex !== i) setActive(i, { scroll: false });
-            });
-        });
-
-        valueEl.textContent = options[activeIndex].dataset.label;
-
-        return {
-            get selectedOption() { return options[indexOfValue(hiddenInput.value)]; },
-            onChange: function (fn) { root.addEventListener("combo-change", fn); }
-        };
-    }
-
-    /* --------------------------------------------------------- encrypt */
-    var algorithm = $("algorithm");
-    var encryptInput = $("encryptInput");
-    var encryptForm = $("encryptForm");
-    var encryptStatus = $("encryptStatus");
-    var encryptResult = $("encryptResult");
-
-    var algorithmCombo = initCombo($("algorithmCombo"), algorithm);
-
-    function refreshAlgorithm() {
-        var option = algorithmCombo.selectedOption;
-        $("algorithmSummary").textContent = option.dataset.summary || "";
-
-        var messages = [];
-        if (option.dataset.educational) {
-            messages.push(
-                "This is a demonstration of the idea, not reviewed cryptography. It " +
-                "round-trips your file faithfully, but do not rely on it to protect " +
-                "anything that matters."
-            );
-        }
-        if (option.dataset.notes) messages.push(option.dataset.notes);
-
-        $("algorithmNotice").hidden = messages.length === 0;
-        $("algorithmNoticeText").textContent = messages.join(" ");
-
-        var imagesOnly = Boolean(option.dataset.imagesOnly);
-        encryptInput.accept = imagesOnly ? "image/*" : "";
-        $("encryptAccept").textContent = imagesOnly
-            ? "Images only for this algorithm · up to {{ max_mb }} MB"
-            : "Any file type · up to {{ max_mb }} MB";
-    }
-
-    algorithmCombo.onChange(refreshAlgorithm);
-    refreshAlgorithm();
-
-    wireDropZone($("encryptDrop"), encryptInput, function (file) {
-        $("encryptName").textContent = file.name;
-        $("encryptSize").textContent = formatSize(file.size);
-        $("encryptChosen").hidden = false;
-        encryptStatus.hidden = true;
-    });
-    wireClear($("encryptClear"), encryptInput, $("encryptChosen"));
-
-    encryptForm.addEventListener("submit", function (event) {
-        event.preventDefault();
-        if (!encryptInput.files.length) {
-            showStatus(encryptStatus, "Choose a file first.", "error");
-            return;
-        }
-
-        var body = new FormData();
-        body.append("file", encryptInput.files[0]);
-        body.append("algorithm", algorithm.value);
-
-        encryptResult.hidden = true;
-        showStatus(encryptStatus, "Encrypting…", "info");
-        busy(encryptForm, true, "Encrypting…");
-
-        fetch("/encrypt", { method: "POST", body: body })
-            .then(function (response) {
-                return response.json().then(function (data) {
-                    return { ok: response.ok, data: data };
-                });
-            })
-            .then(function (result) {
-                if (!result.ok) {
-                    showStatus(encryptStatus, result.data.error || "Encryption failed.", "error");
-                    return;
-                }
-                var data = result.data;
-
-                attachDownload($("downloadPayload"), base64ToBlob(data.encrypted.data),
-                               data.encrypted.filename);
-                $("payloadName").textContent = data.encrypted.filename;
-                $("payloadSize").textContent = formatSize(data.encrypted.size);
-
-                attachDownload($("downloadKey"), base64ToBlob(data.key.data),
-                               data.key.filename);
-                $("keyName").textContent = data.key.filename;
-                $("keySize").textContent = formatSize(data.key.size);
-
-                $("encryptResultMeta").textContent = data.lossy
-                    ? data.algorithm_label + " — stacking the shares returns a " +
-                      "black-and-white approximation, not the original file."
-                    : data.algorithm_label;
-
-                encryptStatus.hidden = true;
-                encryptResult.hidden = false;
-            })
-            .catch(function (error) {
-                showStatus(encryptStatus, "Could not reach the server: " + error.message, "error");
-            })
-            .then(function () { busy(encryptForm, false); });
-    });
-
-    /* --------------------------------------------------------- decrypt */
-    var payloadInput = $("payloadInput");
-    var keyInput = $("keyInput");
-    var keyText = $("keyText");
-    var decryptForm = $("decryptForm");
-    var decryptStatus = $("decryptStatus");
-    var decryptResult = $("decryptResult");
-
-    $("keyHelpToggle").addEventListener("click", function () {
-        $("keyHelp").hidden = !$("keyHelp").hidden;
-    });
-
-    wireDropZone($("payloadDrop"), payloadInput, function (file) {
-        $("payloadChosenName").textContent = file.name;
-        $("payloadChosenSize").textContent = formatSize(file.size);
-        $("payloadChosen").hidden = false;
-        decryptStatus.hidden = true;
-    });
-    wireClear($("payloadClear"), payloadInput, $("payloadChosen"));
-
-    function handleKeyFile(file) {
-        $("keyChosenName").textContent = file.name;
-        $("keyChosenSize").textContent = formatSize(file.size);
-        $("keyChosen").hidden = false;
-        decryptStatus.hidden = true;
-
-        var reader = new FileReader();
-        reader.onload = function (e) {
-            keyText.value = e.target.result;
-        };
-        reader.readAsText(file);
-    }
-
-    wireDropZone($("keyDrop"), keyInput, handleKeyFile);
-    wireClear($("keyClear"), keyInput, $("keyChosen"));
-
-    /* Support dragging and dropping key file directly onto keyText textarea */
-    ["dragenter", "dragover"].forEach(function (type) {
-        keyText.addEventListener(type, function (e) {
-            e.preventDefault();
-            keyText.classList.add("is-over");
-        });
-    });
-    ["dragleave", "drop"].forEach(function (type) {
-        keyText.addEventListener(type, function (e) {
-            e.preventDefault();
-            keyText.classList.remove("is-over");
-        });
-    });
-    keyText.addEventListener("drop", function (e) {
-        if (e.dataTransfer.files.length) {
-            keyInput.files = e.dataTransfer.files;
-            handleKeyFile(e.dataTransfer.files[0]);
-        }
-    });
-
-    decryptForm.addEventListener("submit", function (event) {
-        event.preventDefault();
-
-        if (!payloadInput.files.length) {
-            showStatus(decryptStatus, "Choose the encrypted file.", "error");
-            return;
-        }
-        if (!keyInput.files.length && !keyText.value.trim()) {
-            showStatus(decryptStatus, "Paste your key, or upload the .key.json file.", "error");
-            return;
-        }
-
-        var body = new FormData();
-        body.append("file", payloadInput.files[0]);
-        if (keyInput.files.length) {
-            body.append("key_file", keyInput.files[0]);
-        } else {
-            body.append("key_text", keyText.value);
-        }
-
-        decryptResult.hidden = true;
-        showStatus(decryptStatus, "Decrypting…", "info");
-        busy(decryptForm, true, "Decrypting…");
-
-        fetch("/decrypt", { method: "POST", body: body })
-            .then(function (response) {
-                /* Success streams the file back; failure arrives as JSON. */
-                if (!response.ok) {
-                    return response.json()
-                        .catch(function () { return {}; })
-                        .then(function (data) {
-                            showStatus(decryptStatus, data.error || "Decryption failed.", "error");
-                        });
-                }
-                var name = response.headers.get("X-Original-Filename") || "recovered";
-                return response.blob().then(function (blob) {
-                    attachDownload($("downloadPlain"), blob, name);
-                    $("plainName").textContent = name;
-                    $("plainSize").textContent = formatSize(blob.size);
-                    $("decryptResultMeta").textContent = "Checksum matched the key file.";
-                    decryptStatus.hidden = true;
-                    decryptResult.hidden = false;
-                });
-            })
-            .catch(function (error) {
-                showStatus(decryptStatus, "Could not reach the server: " + error.message, "error");
-            })
-            .then(function () { busy(decryptForm, false); });
-    });
-})();
-</script>
+<script src="{{ url_for('static', filename='js/app.js') }}" defer></script>
 {% endblock %}

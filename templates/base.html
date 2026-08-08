@@ -7,8 +7,10 @@
     <title>{% block title %}FileCrypt — Encrypt & Decrypt Any File{% endblock %}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23ea580c'/><path d='M50 22 72 31v20c0 14-9 23-22 27-13-4-22-13-22-27V31z' fill='none' stroke='white' stroke-width='7' stroke-linejoin='round'/></svg>">
-    <script>
-        /* Applied before first paint so the page never flashes the wrong theme. */
+    <script nonce="{{ csp_nonce }}">
+        /* Applied before first paint so the page never flashes the wrong theme.
+           This one has to stay inline -- an external file would load too late --
+           so the CSP admits it by nonce rather than by allowing inline script. */
         (function () {
             try {
                 var saved = localStorage.getItem("filecrypt-theme") || localStorage.getItem("cryptoimage-theme");
@@ -23,7 +25,7 @@
 </head>
 <body>
 
-<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+<svg class="sprite" width="0" height="0" aria-hidden="true">
     <defs>
         <symbol id="i-shield" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></symbol>
         <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></symbol>
@@ -96,63 +98,7 @@
     </div>
 </footer>
 
-<script>
-(function () {
-    "use strict";
-
-    /* ---------------------------------------------------------- theme */
-    var root = document.documentElement;
-    document.getElementById("themeToggle").addEventListener("click", function () {
-        var dark = root.dataset.theme !== "dark";
-        root.classList.add("theme-switching");
-        root.dataset.theme = dark ? "dark" : "light";
-        try { localStorage.setItem("filecrypt-theme", dark ? "dark" : "light"); } catch (e) {}
-        // Two frames: one to apply the new colours, one to let them paint
-        // before transitions are allowed back.
-        requestAnimationFrame(function () {
-            requestAnimationFrame(function () {
-                root.classList.remove("theme-switching");
-            });
-        });
-    });
-
-    /* ------------------------------------------------- mobile menu */
-    var nav = document.getElementById("nav");
-    var navToggle = document.getElementById("navToggle");
-    navToggle.addEventListener("click", function () {
-        var open = nav.dataset.open !== "true";
-        nav.dataset.open = open ? "true" : "false";
-        navToggle.setAttribute("aria-expanded", open ? "true" : "false");
-    });
-    nav.addEventListener("click", function (e) {
-        if (e.target.closest(".nav-link")) {
-            nav.dataset.open = "false";
-            navToggle.setAttribute("aria-expanded", "false");
-        }
-    });
-
-    /* --------------------------------- highlight the section in view */
-    var links = Array.prototype.slice.call(nav.querySelectorAll(".nav-link"));
-    var targets = links
-        .map(function (link) { return document.querySelector(link.getAttribute("href")); })
-        .filter(Boolean);
-
-    if ("IntersectionObserver" in window && targets.length) {
-        var observer = new IntersectionObserver(function (entries) {
-            entries.forEach(function (entry) {
-                if (!entry.isIntersecting) return;
-                links.forEach(function (link) {
-                    link.classList.toggle(
-                        "is-active",
-                        link.getAttribute("href") === "#" + entry.target.id
-                    );
-                });
-            });
-        }, { rootMargin: "-45% 0px -50% 0px" });
-        targets.forEach(function (t) { observer.observe(t); });
-    }
-})();
-</script>
+<script src="{{ url_for('static', filename='js/chrome.js') }}" defer></script>
 
 {% block scripts %}{% endblock %}
 </body>

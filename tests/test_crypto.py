@@ -9,6 +9,8 @@ silently producing garbage.
 
 import base64
 import io
+import json
+import re
 import sys
 from pathlib import Path
 
@@ -19,13 +21,14 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app import create_app
-from utils import keyfile
+from routes.crypto import safe_name
+from utils import encryption_utils, keyfile
 from utils.encryption_utils import ALGORITHMS, DecryptionError
 
 BYTE_LIKE = [
     pytest.param(b"", id="empty"),
     pytest.param(b"\x00", id="one-byte"),
-    pytest.param("unicode ✓ and newlines\n\n".encode("utf-8"), id="text"),
+    pytest.param("unicode ✓ and newlines\n\n".encode(), id="text"),
     pytest.param(bytes(range(256)) * 500, id="binary-128k"),
 ]
 
@@ -216,3 +219,171 @@ def test_upload_over_the_limit_returns_413(client):
     response = post_encrypt(client, oversize, "aes", "big.bin")
     assert response.status_code == 413
     assert "error" in response.get_json()
+
+
+# ---------------------------------------------------------------- safe_name
+
+@pytest.mark.parametrize("supplied,expected", [
+    ("../../../../etc/passwd", "passwd"),
+    ("..\\..\\windows\\system32\\config.sys", "config.sys"),
+    ("plain.txt", "plain.txt"),
+    ("with:colon*star?.txt", "withcolonstar.txt"),
+    ("head\r\ninjection.txt", "headinjection.txt"),
+    ("  spaced.txt  ", "spaced.txt"),
+    ("", "file"),
+    ("...", "file"),
+    ("/", "file"),
+    ("x" * 300, "x" * 120),
+])
+def test_safe_name_strips_everything_dangerous(supplied, expected):
+    assert safe_name(supplied) == expected
+
+
+# ------------------------------------------------------- verification paths
+
+def test_key_file_naming_the_wrong_algorithm_is_refused(client):
+    """The algorithm comes from the key file, so it is user-controlled.
+
+    Point an AES key file at `chaos` and the material still parses -- it is a
+    32-byte key either way -- so the transform runs and emits garbage. Only the
+    checksum stands between that and a silently corrupt download.
+    """
+    body = post_encrypt(client, b"payload" * 100, "aes").get_json()
+    doc = json.loads(base64.b64decode(body["key"]["data"]))
+    doc["algorithm"] = "chaos"
+
+    response = client.post(
+        "/decrypt",
+        data={
+            "file": (io.BytesIO(base64.b64decode(body["encrypted"]["data"])), "x.enc"),
+            "key_text": json.dumps(doc),
+        },
+        content_type="multipart/form-data",
+    )
+    assert response.status_code == 400
+    assert "error" in response.get_json()
+
+
+def test_lossy_algorithms_record_no_checksum():
+    """verify() has to be a no-op for them: there is no original to match."""
+    doc = keyfile.build("visual_crypto", "photo.png", {"width": 4, "height": 4}, b"ignored")
+    assert "plaintext_sha256" not in doc
+    keyfile.verify(doc, b"anything at all")  # must not raise
+
+
+@pytest.mark.parametrize("name,expected", [
+    ("aes", "checksum"),
+    ("chaos", "checksum"),
+    ("visual_crypto", "none"),
+])
+def test_decrypt_reports_which_check_ran(client, name, expected):
+    """The page used to claim a checksum matched no matter what happened."""
+    alg = ALGORITHMS[name]
+    payload = sample_png() if alg.images_only else b"contents" * 50
+    body = post_encrypt(client, payload, name, "photo.png").get_json()
+
+    response = client.post(
+        "/decrypt",
+        data={
+            "file": (io.BytesIO(base64.b64decode(body["encrypted"]["data"])), "x.enc"),
+            "key_file": (io.BytesIO(base64.b64decode(body["key"]["data"])), "x.key.json"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert response.status_code == 200
+    assert response.headers["X-Verified"] == expected
+    assert response.headers["X-Lossy"] == ("1" if alg.lossy else "0")
+
+
+def test_unicode_filenames_survive_the_round_trip(client):
+    """Header values are latin-1 on the wire, so the name travels percent-encoded."""
+    body = post_encrypt(client, b"data" * 20, "aes", "文档 résumé.pdf").get_json()
+    response = client.post(
+        "/decrypt",
+        data={
+            "file": (io.BytesIO(base64.b64decode(body["encrypted"]["data"])), "x.enc"),
+            "key_file": (io.BytesIO(base64.b64decode(body["key"]["data"])), "x.key.json"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert response.status_code == 200
+    from urllib.parse import unquote
+    assert unquote(response.headers["X-Original-Filename"]) == "文档 résumé.pdf"
+
+
+# ------------------------------------------------------------ visual crypto
+
+def test_shares_decrypt_without_any_key_file(client):
+    """Its key file holds no key, so the decrypt panel should not demand one."""
+    body = post_encrypt(client, sample_png(), "visual_crypto", "photo.png").get_json()
+    response = client.post(
+        "/decrypt",
+        data={"file": (io.BytesIO(base64.b64decode(body["encrypted"]["data"])),
+                       "photo.png.shares.zip")},
+        content_type="multipart/form-data",
+    )
+    assert response.status_code == 200
+    assert response.headers["X-Lossy"] == "1"
+
+
+def test_a_non_share_file_without_a_key_is_still_refused(client):
+    body = post_encrypt(client, b"data" * 20, "aes").get_json()
+    response = client.post(
+        "/decrypt",
+        data={"file": (io.BytesIO(base64.b64decode(body["encrypted"]["data"])), "x.enc")},
+        content_type="multipart/form-data",
+    )
+    assert response.status_code == 400
+
+
+def test_oversized_share_is_refused(monkeypatch):
+    """The cap is what stops a deflate bomb expanding past the upload limit.
+
+    Shrinking it rather than building a real bomb keeps the test fast; the
+    branch under test is the same one either way.
+    """
+    shares, material = ALGORITHMS["visual_crypto"].encrypt(sample_png())
+    monkeypatch.setattr(encryption_utils, "_VC_MAX_SHARE_BYTES", 64)
+    with pytest.raises(DecryptionError):
+        ALGORITHMS["visual_crypto"].decrypt(shares, material)
+
+
+# -------------------------------------------------------- response hardening
+
+def test_security_headers_are_set(client):
+    response = client.get("/")
+    csp = response.headers["Content-Security-Policy"]
+    assert "'unsafe-inline'" not in csp
+    assert "'unsafe-eval'" not in csp
+    assert "default-src 'self'" in csp
+    assert "frame-ancestors 'none'" in csp
+    assert response.headers["X-Content-Type-Options"] == "nosniff"
+    assert response.headers["Referrer-Policy"] == "no-referrer"
+    assert response.headers["X-Frame-Options"] == "DENY"
+
+
+def test_the_inline_theme_script_carries_the_policy_nonce(client):
+    """CSP is only worth anything if the one inline script actually matches it."""
+    response = client.get("/")
+    nonce = re.search(r"'nonce-([^']+)'", response.headers["Content-Security-Policy"])
+    assert nonce, "no nonce in the policy"
+    assert f'nonce="{nonce.group(1)}"'.encode() in response.data
+
+
+def test_each_request_gets_a_fresh_nonce(client):
+    first = client.get("/").headers["Content-Security-Policy"]
+    second = client.get("/").headers["Content-Security-Policy"]
+    assert first != second
+
+
+def test_decrypted_files_are_not_cached(client):
+    body = post_encrypt(client, b"sensitive" * 20, "aes").get_json()
+    response = client.post(
+        "/decrypt",
+        data={
+            "file": (io.BytesIO(base64.b64decode(body["encrypted"]["data"])), "x.enc"),
+            "key_file": (io.BytesIO(base64.b64decode(body["key"]["data"])), "x.key.json"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert response.headers["Cache-Control"] == "no-store"

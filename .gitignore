@@ -50,3 +50,10 @@ Thumbs.db
 .pytest_cache/
 .deepeval/
 .claude/
+
+# Encryption output, in case any is produced inside the working tree.
+# A committed .key.json is a committed key.
+*.enc
+*.fcx
+*.key.json
+*.shares.zip

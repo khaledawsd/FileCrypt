@@ -2,12 +2,19 @@
 
 Every algorithm exposes the same pair of functions::
 
-    encrypt(data: bytes) -> (ciphertext: bytes, material: dict)
-    decrypt(ciphertext: bytes, material: dict) -> bytes
+    encrypt(data: bytes, *, key: bytes | None = None) -> (ciphertext, material)
+    decrypt(ciphertext: bytes, material: dict, *, key: bytes | None = None) -> bytes
 
 ``material`` holds everything needed to reverse the operation. It is written
 verbatim into the key file the user downloads, which is the only place key
 material exists once a request finishes -- the server keeps nothing.
+
+``key`` is how passphrase mode plugs in. Left as ``None`` -- the default, and
+what the key-file flow does -- each algorithm invents its own random secret and
+reports it in ``material``. Passed a 32-byte secret, the algorithm uses that
+instead and returns ``material`` *without* the key in it, because in passphrase
+mode the secret is reconstructed from what the user remembers rather than
+stored. See ``utils.envelope`` for where those bytes come from.
 
 Algorithms fall into two groups:
 
@@ -29,17 +36,17 @@ import hashlib
 import io
 import os
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 import numpy as np
 from Crypto.Cipher import Blowfish
+from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.fernet import Fernet
 
 
 class DecryptionError(Exception):
@@ -82,19 +89,49 @@ def _unb64(value, field_name: str) -> bytes:
         raise DecryptionError(f"The {field_name} entry in the key file is malformed.") from exc
 
 
+KEY_BYTES = 32
+
+
+def _pick_key(key: bytes | None) -> tuple[bytes, dict]:
+    """Settle on the secret for one encryption, and what must be recorded.
+
+    A caller-supplied key was derived from a passphrase: reproducible, so the
+    key file records nothing. A generated one exists only inside this call, so
+    it has to be written down or the file is unrecoverable.
+    """
+    if key is not None:
+        _require(len(key) == KEY_BYTES, "Derived key is the wrong size.")
+        return key, {}
+    generated = os.urandom(KEY_BYTES)
+    return generated, {"key": _b64(generated)}
+
+
+def _load_key(material: dict, key: bytes | None) -> bytes:
+    """The decryption-time counterpart of :func:`_pick_key`."""
+    return key if key is not None else _unb64(material.get("key"), "key")
+
+
 # --------------------------------------------------------------------------
 # 1. Fernet -- AES-128-CBC + HMAC-SHA256, from the cryptography library
 # --------------------------------------------------------------------------
 
-def fernet_encrypt(data: bytes) -> tuple[bytes, dict]:
-    key = Fernet.generate_key()
-    return Fernet(key).encrypt(data), {"key": key.decode()}
+def fernet_encrypt(data: bytes, *, key: bytes | None = None) -> tuple[bytes, dict]:
+    # Fernet wants its key as url-safe base64 rather than raw bytes, so this one
+    # cannot use _pick_key: the generated form is kept in its historical string
+    # shape so key files written by older builds still load.
+    if key is None:
+        token_key = Fernet.generate_key()
+        return Fernet(token_key).encrypt(data), {"key": token_key.decode()}
+    return Fernet(base64.urlsafe_b64encode(key)).encrypt(data), {}
 
 
-def fernet_decrypt(data: bytes, material: dict) -> bytes:
-    key = material.get("key", "").encode()
+def fernet_decrypt(data: bytes, material: dict, *, key: bytes | None = None) -> bytes:
+    token_key = (
+        base64.urlsafe_b64encode(key) if key is not None
+        else material.get("key", "").encode()
+    )
     try:
-        return Fernet(key).decrypt(data)
+        return Fernet(token_key).decrypt(data)
     except Exception as exc:  # InvalidToken and malformed keys alike
         raise DecryptionError("Wrong key, or the file has been modified.") from exc
 
@@ -105,16 +142,16 @@ def fernet_decrypt(data: bytes, material: dict) -> bytes:
 # The original code used CBC, which cannot tell a wrong key from a corrupt file
 # and happily emits garbage. GCM authenticates, so both cases fail loudly.
 
-def aes_encrypt(data: bytes) -> tuple[bytes, dict]:
-    key = os.urandom(32)
+def aes_encrypt(data: bytes, *, key: bytes | None = None) -> tuple[bytes, dict]:
+    key, material = _pick_key(key)
     nonce = os.urandom(12)
     ciphertext = AESGCM(key).encrypt(nonce, data, None)
-    return nonce + ciphertext, {"key": _b64(key)}
+    return nonce + ciphertext, material
 
 
-def aes_decrypt(data: bytes, material: dict) -> bytes:
+def aes_decrypt(data: bytes, material: dict, *, key: bytes | None = None) -> bytes:
     _require(len(data) > 12, "File is too short to be valid AES output.")
-    key = _unb64(material.get("key"), "key")
+    key = _load_key(material, key)
     try:
         return AESGCM(key).decrypt(data[:12], data[12:], None)
     except Exception as exc:
@@ -133,7 +170,7 @@ def aes_decrypt(data: bytes, material: dict) -> bytes:
 _RSA_WRAPPED_LEN = 256  # 2048-bit modulus
 
 
-def rsa_encrypt(data: bytes) -> tuple[bytes, dict]:
+def rsa_encrypt(data: bytes, *, key: bytes | None = None) -> tuple[bytes, dict]:
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     data_key = os.urandom(32)
     nonce = os.urandom(12)
@@ -147,23 +184,31 @@ def rsa_encrypt(data: bytes) -> tuple[bytes, dict]:
             label=None,
         ),
     )
+    # In passphrase mode the private key travels inside the encrypted file
+    # rather than in a separate key file, so it has to be encrypted too --
+    # otherwise the key that opens the ciphertext would sit in the clear right
+    # next to it. PKCS#8 already has a standard way to do that.
+    protection = (
+        serialization.BestAvailableEncryption(key) if key is not None
+        else serialization.NoEncryption()
+    )
     pem = private_key.private_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption(),
+        encryption_algorithm=protection,
     ).decode()
     return wrapped + nonce + ciphertext, {"private_key": pem}
 
 
-def rsa_decrypt(data: bytes, material: dict) -> bytes:
+def rsa_decrypt(data: bytes, material: dict, *, key: bytes | None = None) -> bytes:
     _require(
         len(data) > _RSA_WRAPPED_LEN + 12,
         "File is too short to be valid RSA output.",
     )
     pem = material.get("private_key")
-    _require(bool(pem), "Key file has no private_key entry.")
+    _require(isinstance(pem, str) and pem != "", "Key file has no private_key entry.")
     try:
-        private_key = serialization.load_pem_private_key(pem.encode(), password=None)
+        private_key = serialization.load_pem_private_key(pem.encode(), password=key)
         data_key = private_key.decrypt(
             data[:_RSA_WRAPPED_LEN],
             asym_padding.OAEP(
@@ -191,17 +236,17 @@ def rsa_decrypt(data: bytes, material: dict) -> bytes:
 _BF_BLOCK = Blowfish.block_size  # 8 bytes
 
 
-def blowfish_encrypt(data: bytes) -> tuple[bytes, dict]:
-    key = os.urandom(32)  # Blowfish accepts 4..56 bytes
+def blowfish_encrypt(data: bytes, *, key: bytes | None = None) -> tuple[bytes, dict]:
+    key, material = _pick_key(key)  # Blowfish accepts 4..56 bytes
     iv = os.urandom(_BF_BLOCK)
     pad_len = _BF_BLOCK - (len(data) % _BF_BLOCK)
     padded = data + bytes([pad_len] * pad_len)
     cipher = Blowfish.new(key, Blowfish.MODE_CBC, iv)
-    return iv + cipher.encrypt(padded), {"key": _b64(key)}
+    return iv + cipher.encrypt(padded), material
 
 
-def blowfish_decrypt(data: bytes, material: dict) -> bytes:
-    key = _unb64(material.get("key"), "key")
+def blowfish_decrypt(data: bytes, material: dict, *, key: bytes | None = None) -> bytes:
+    key = _load_key(material, key)
     _require(
         len(data) > _BF_BLOCK and len(data) % _BF_BLOCK == 0,
         "File is not a whole number of Blowfish blocks.",
@@ -262,15 +307,15 @@ def _chaos_keystream(key: bytes, nbytes: int) -> np.ndarray:
     return out.ravel()[:nbytes]
 
 
-def chaos_encrypt(data: bytes) -> tuple[bytes, dict]:
-    key = os.urandom(32)
+def chaos_encrypt(data: bytes, *, key: bytes | None = None) -> tuple[bytes, dict]:
+    key, material = _pick_key(key)
     stream = _chaos_keystream(key, len(data))
     cipher = np.frombuffer(data, dtype=np.uint8) ^ stream
-    return cipher.tobytes(), {"key": _b64(key)}
+    return cipher.tobytes(), material
 
 
-def chaos_decrypt(data: bytes, material: dict) -> bytes:
-    key = _unb64(material.get("key"), "key")
+def chaos_decrypt(data: bytes, material: dict, *, key: bytes | None = None) -> bytes:
+    key = _load_key(material, key)
     stream = _chaos_keystream(key, len(data))
     return (np.frombuffer(data, dtype=np.uint8) ^ stream).tobytes()
 
@@ -315,20 +360,20 @@ def _pack_bases(bases: np.ndarray) -> np.ndarray:
     return out
 
 
-def dna_encrypt(data: bytes) -> tuple[bytes, dict]:
-    key = os.urandom(32)
+def dna_encrypt(data: bytes, *, key: bytes | None = None) -> tuple[bytes, dict]:
+    key, material = _pick_key(key)
     arr = np.frombuffer(data, dtype=np.uint8)
     if arr.size == 0:
-        return b"", {"key": _b64(key)}
+        return b"", material
     rules, ks_bases = _dna_parts(key, arr.size)
     bases = _unpack_bases(arr)
     bases = _DNA_RULES[rules[:, None], bases]        # apply coding rule
     bases = (bases + ks_bases) % 4                    # DNA addition
-    return _pack_bases(bases).tobytes(), {"key": _b64(key)}
+    return _pack_bases(bases).tobytes(), material
 
 
-def dna_decrypt(data: bytes, material: dict) -> bytes:
-    key = _unb64(material.get("key"), "key")
+def dna_decrypt(data: bytes, material: dict, *, key: bytes | None = None) -> bytes:
+    key = _load_key(material, key)
     arr = np.frombuffer(data, dtype=np.uint8)
     if arr.size == 0:
         return b""
@@ -383,21 +428,21 @@ def _bit_perm_tables(key: bytes) -> tuple[np.ndarray, np.ndarray]:
     return forward, inverse
 
 
-def quantum_encrypt(data: bytes) -> tuple[bytes, dict]:
-    key = os.urandom(32)
+def quantum_encrypt(data: bytes, *, key: bytes | None = None) -> tuple[bytes, dict]:
+    key, material = _pick_key(key)
     arr = np.frombuffer(data, dtype=np.uint8).copy()
     if arr.size == 0:
-        return b"", {"key": _b64(key)}
+        return b"", material
     forward, _ = _bit_perm_tables(key)
     for rnd in range(_Q_ROUNDS):
         arr ^= _keystream(key, arr.size, b"quantum-x-%d" % rnd)   # Pauli-X
         arr = forward[rnd][arr]                                    # qubit remap
         arr = np.bitwise_xor.accumulate(arr)                       # CNOT chain
-    return arr.tobytes(), {"key": _b64(key)}
+    return arr.tobytes(), material
 
 
-def quantum_decrypt(data: bytes, material: dict) -> bytes:
-    key = _unb64(material.get("key"), "key")
+def quantum_decrypt(data: bytes, material: dict, *, key: bytes | None = None) -> bytes:
+    key = _load_key(material, key)
     arr = np.frombuffer(data, dtype=np.uint8).copy()
     if arr.size == 0:
         return b""
@@ -429,6 +474,11 @@ class VisualCryptoError(Exception):
 
 _VC_LAYOUT = np.array([[[1, 0], [0, 1]], [[0, 1], [1, 0]]], dtype=np.uint8)
 
+# A share archive is the one input whose decompressed size is not bounded by the
+# upload limit: deflate happily turns 32 MB of zeros into gigabytes. Two shares
+# of a sane image stay well under this.
+_VC_MAX_SHARE_BYTES = 256 * 1024 * 1024
+
 
 def _tile(blocks: np.ndarray) -> np.ndarray:
     """(h, w, 2, 2) blocks -> (2h, 2w) image."""
@@ -436,7 +486,23 @@ def _tile(blocks: np.ndarray) -> np.ndarray:
     return blocks.transpose(0, 2, 1, 3).reshape(h * 2, w * 2)
 
 
-def visual_encrypt(data: bytes) -> tuple[bytes, dict]:
+def looks_like_shares(data: bytes) -> bool:
+    """True for the archive ``visual_encrypt`` produces.
+
+    Visual cryptography is the one algorithm whose key file holds no key -- the
+    shares themselves are the secret. Recognising its output by shape lets the
+    decrypt path stop demanding a key file that would contain nothing.
+    """
+    if data[:2] != b"PK":
+        return False
+    try:
+        names = zipfile.ZipFile(io.BytesIO(data)).namelist()
+    except (zipfile.BadZipFile, OSError):
+        return False
+    return sum(name.lower().endswith(".png") for name in names) >= 2
+
+
+def visual_encrypt(data: bytes, *, key: bytes | None = None) -> tuple[bytes, dict]:
     from PIL import Image, UnidentifiedImageError
 
     try:
@@ -449,7 +515,8 @@ def visual_encrypt(data: bytes) -> tuple[bytes, dict]:
         ) from exc
 
     # 1 = white, 0 = black after the dither-free threshold conversion.
-    pixels = np.array(image.convert("L").point(lambda v: 255 if v > 127 else 0).convert("1"), dtype=np.uint8)
+    mono = image.convert("L").point(lambda v: 255 if v > 127 else 0).convert("1")
+    pixels = np.array(mono, dtype=np.uint8)
     height, width = pixels.shape
 
     rng = np.random.default_rng(list(os.urandom(32)))
@@ -479,7 +546,7 @@ def visual_encrypt(data: bytes) -> tuple[bytes, dict]:
     return buffer.getvalue(), {"width": width, "height": height}
 
 
-def visual_decrypt(data: bytes, material: dict) -> bytes:
+def visual_decrypt(data: bytes, material: dict, *, key: bytes | None = None) -> bytes:
     from PIL import Image
 
     try:
@@ -495,8 +562,17 @@ def visual_decrypt(data: bytes, material: dict) -> bytes:
 
     shares = []
     for name in sorted(wanted)[:2]:
+        # Trust the declared size only as a reason to refuse early; the read
+        # below is still capped, because the header is attacker-controlled and
+        # may understate what the member actually expands to.
+        _require(
+            archive.getinfo(name).file_size <= _VC_MAX_SHARE_BYTES,
+            "That share image is implausibly large.",
+        )
         with archive.open(name) as handle:
-            shares.append(np.array(Image.open(io.BytesIO(handle.read())).convert("1"), dtype=np.uint8))
+            raw = handle.read(_VC_MAX_SHARE_BYTES + 1)
+        _require(len(raw) <= _VC_MAX_SHARE_BYTES, "That share image is implausibly large.")
+        shares.append(np.array(Image.open(io.BytesIO(raw)).convert("1"), dtype=np.uint8))
 
     _require(shares[0].shape == shares[1].shape, "The two shares are different sizes.")
 
@@ -515,13 +591,17 @@ class Algorithm:
     name: str
     label: str
     summary: str
-    encrypt: Callable[[bytes], tuple[bytes, dict]]
-    decrypt: Callable[[bytes, dict], bytes]
+    # Both take a keyword-only `key`, which Callable cannot spell out.
+    encrypt: Callable[..., tuple[bytes, dict]]
+    decrypt: Callable[..., bytes]
     educational: bool = False
     images_only: bool = False
     lossy: bool = False
     extension: str = ".enc"
     notes: str = ""
+    # Visual cryptography is the exception: its secret is the pair of shares
+    # themselves, so there is no key for a passphrase to stand in for.
+    supports_passphrase: bool = True
 
 
 ALGORITHMS: dict[str, Algorithm] = {
@@ -569,6 +649,7 @@ ALGORITHMS: dict[str, Algorithm] = {
             "Splits an image into two shares that reveal it when stacked.",
             visual_encrypt, visual_decrypt,
             images_only=True, lossy=True, extension=".shares.zip",
+            supports_passphrase=False,
             notes="Images only. Stacking returns a black-and-white "
                   "approximation at double size, not the original file.",
         ),

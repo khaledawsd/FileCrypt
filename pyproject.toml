@@ -1,0 +1,32 @@
+[tool.ruff]
+line-length = 100
+# Set by the pins in requirements.txt, not by preference: numpy 2.5 requires
+# 3.12, which is the real floor for the project however old the syntax looks.
+target-version = "py312"
+extend-exclude = ["venv"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle
+    "F",    # pyflakes
+    "W",    # warnings
+    "I",    # import sorting
+    "UP",   # pyupgrade
+    "B",    # bugbear
+    "C4",   # comprehensions
+    "SIM",  # simplifications
+    "RUF",  # ruff-specific
+]
+ignore = [
+    # The crypto modules deliberately catch broad exceptions and re-raise them
+    # as DecryptionError, so that a wrong key and a corrupt file look identical
+    # to a caller. Narrowing these would leak which one it was.
+    "BLE001",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests reach into private helpers on purpose.
+"tests/*" = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

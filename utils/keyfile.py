@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from .encryption_utils import ALGORITHMS, DecryptionError
 
@@ -31,7 +31,7 @@ def build(algorithm: str, original_filename: str, material: dict, plaintext: byt
         "version": VERSION,
         "algorithm": algorithm,
         "original_filename": original_filename,
-        "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "material": material,
     }
     if not spec.lossy:
