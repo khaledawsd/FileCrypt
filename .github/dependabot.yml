@@ -1,0 +1,21 @@
+version: 2
+
+# Every dependency here is pinned to an exact version, which is right for
+# reproducibility and wrong for security patches unless something nags. This is
+# the something. It matters more than usual for a project whose whole job is
+# encryption -- `cryptography` and `pycryptodome` are not libraries to run
+# months behind on.
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      dev-dependencies:
+        patterns: ["pytest", "ruff", "mypy", "hypothesis", "coverage"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

@@ -6,7 +6,6 @@ wrong one is refused rather than acted on, and that the file leaks nothing
 about its contents to whoever is holding it.
 """
 
-import base64
 import hashlib
 import io
 import json
@@ -17,7 +16,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app import create_app
+from conftest import encrypt_ok, encrypt_via_http
+
 from utils import envelope
 from utils.encryption_utils import ALGORITHMS, DecryptionError
 
@@ -31,11 +31,6 @@ PAYLOADS = [
     pytest.param("unicode ✓ and newlines\n\n".encode(), id="text"),
     pytest.param(bytes(range(256)) * 200, id="binary-51k"),
 ]
-
-
-@pytest.fixture
-def client():
-    return create_app().test_client()
 
 
 def seal(payload: bytes, name: str, passphrase: str = PASSPHRASE) -> bytes:
@@ -167,28 +162,19 @@ def test_minimum_length_passphrase_is_accepted():
 
 # --------------------------------------------------------------------- HTTP
 
-def post_encrypt(client, payload, name, passphrase=PASSPHRASE, filename="report.pdf"):
-    data = {"file": (io.BytesIO(payload), filename), "algorithm": name}
-    if passphrase is not None:
-        data["passphrase"] = passphrase
-    return client.post("/encrypt", data=data, content_type="multipart/form-data")
-
-
 @pytest.mark.parametrize("name", SEALABLE)
-def test_http_round_trip(client, name):
+@pytest.mark.parametrize("kdf", list(envelope.KDF_NAMES))
+def test_http_round_trip(client, name, kdf):
     payload = bytes(range(256)) * 100
-    body = post_encrypt(client, payload, name).get_json()
+    enc = encrypt_ok(client, payload, name, passphrase=PASSPHRASE, kdf=kdf)
 
-    assert body["passphrase_mode"] is True
-    assert body["key"] is None
-    assert body["encrypted"]["filename"] == "report.pdf.fcx"
+    assert enc.passphrase_mode is True
+    assert enc.key_bytes is None
+    assert enc.filename == "report.pdf.fcx"
 
     recovered = client.post(
         "/decrypt",
-        data={
-            "file": (io.BytesIO(base64.b64decode(body["encrypted"]["data"])), "x.fcx"),
-            "passphrase": PASSPHRASE,
-        },
+        data={"file": (io.BytesIO(enc.payload), "x.fcx"), "passphrase": PASSPHRASE},
         content_type="multipart/form-data",
     )
     assert recovered.status_code == 200
@@ -197,10 +183,10 @@ def test_http_round_trip(client, name):
 
 
 def test_decrypting_an_envelope_without_a_passphrase_is_refused(client):
-    body = post_encrypt(client, b"data" * 100, "aes").get_json()
+    enc = encrypt_ok(client, b"data" * 100, "aes", passphrase=PASSPHRASE)
     response = client.post(
         "/decrypt",
-        data={"file": (io.BytesIO(base64.b64decode(body["encrypted"]["data"])), "x.fcx")},
+        data={"file": (io.BytesIO(enc.payload), "x.fcx")},
         content_type="multipart/form-data",
     )
     assert response.status_code == 400
@@ -208,11 +194,11 @@ def test_decrypting_an_envelope_without_a_passphrase_is_refused(client):
 
 
 def test_decrypting_with_the_wrong_passphrase_is_refused(client):
-    body = post_encrypt(client, b"data" * 100, "aes").get_json()
+    enc = encrypt_ok(client, b"data" * 100, "aes", passphrase=PASSPHRASE)
     response = client.post(
         "/decrypt",
         data={
-            "file": (io.BytesIO(base64.b64decode(body["encrypted"]["data"])), "x.fcx"),
+            "file": (io.BytesIO(enc.payload), "x.fcx"),
             "passphrase": "some other passphrase",
         },
         content_type="multipart/form-data",
@@ -221,21 +207,21 @@ def test_decrypting_with_the_wrong_passphrase_is_refused(client):
 
 
 def test_short_passphrase_is_refused_by_the_route(client):
-    response = post_encrypt(client, b"data" * 100, "aes", passphrase="abc")
+    response = encrypt_via_http(client, b"data" * 100, "aes", passphrase="abc")
     assert response.status_code == 400
     assert "error" in response.get_json()
 
 
 def test_visual_crypto_rejects_a_passphrase(client):
     """It has no key, so there is nothing for a passphrase to stand in for."""
-    response = post_encrypt(client, b"data" * 100, "visual_crypto")
+    response = encrypt_via_http(client, b"data" * 100, "visual_crypto", passphrase=PASSPHRASE)
     assert response.status_code == 400
     assert "error" in response.get_json()
 
 
 def test_key_file_mode_is_untouched_by_all_this(client):
     """No passphrase field means the original two-file flow, unchanged."""
-    body = post_encrypt(client, b"data" * 100, "aes", passphrase=None).get_json()
-    assert body["passphrase_mode"] is False
-    assert body["key"]["filename"] == "report.pdf.key.json"
-    assert body["encrypted"]["filename"] == "report.pdf.enc"
+    enc = encrypt_ok(client, b"data" * 100, "aes")
+    assert enc.passphrase_mode is False
+    assert enc.key_filename == "report.pdf.key.json"
+    assert enc.filename == "report.pdf.enc"

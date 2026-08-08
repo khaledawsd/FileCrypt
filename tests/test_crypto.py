@@ -7,7 +7,6 @@ return exactly what went in, and a wrong key must be reported rather than
 silently producing garbage.
 """
 
-import base64
 import io
 import json
 import re
@@ -19,6 +18,8 @@ import pytest
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from conftest import encrypt_ok, encrypt_via_http, sample_png
 
 from app import create_app
 from routes.crypto import safe_name
@@ -33,19 +34,6 @@ BYTE_LIKE = [
 ]
 
 LOSSLESS = [name for name, a in ALGORITHMS.items() if not a.lossy]
-
-
-def sample_png() -> bytes:
-    arr = np.zeros((48, 64), dtype=np.uint8)
-    arr[10:38, 10:54] = 255
-    buf = io.BytesIO()
-    Image.fromarray(arr, mode="L").save(buf, format="PNG")
-    return buf.getvalue()
-
-
-@pytest.fixture
-def client():
-    return create_app().test_client()
 
 
 # ---------------------------------------------------------------- algorithms
@@ -126,11 +114,7 @@ def test_malformed_key_files_are_rejected(raw):
 # --------------------------------------------------------------------- HTTP
 
 def post_encrypt(client, payload, name, filename="report.pdf"):
-    return client.post(
-        "/encrypt",
-        data={"file": (io.BytesIO(payload), filename), "algorithm": name},
-        content_type="multipart/form-data",
-    )
+    return encrypt_via_http(client, payload, name, filename=filename)
 
 
 @pytest.mark.parametrize("name", list(ALGORITHMS))
@@ -139,15 +123,13 @@ def test_http_cycle(client, name):
     payload = sample_png() if alg.images_only else bytes(range(256)) * 200
     filename = "photo.png" if alg.images_only else "report.pdf"
 
-    response = post_encrypt(client, payload, name, filename)
-    assert response.status_code == 200
-    body = response.get_json()
+    enc = encrypt_ok(client, payload, name, filename=filename)
 
     recovered = client.post(
         "/decrypt",
         data={
-            "file": (io.BytesIO(base64.b64decode(body["encrypted"]["data"])), "x.enc"),
-            "key_file": (io.BytesIO(base64.b64decode(body["key"]["data"])), "x.key.json"),
+            "file": (io.BytesIO(enc.payload), "x.enc"),
+            "key_file": (io.BytesIO(enc.key_bytes), "x.key.json"),
         },
         content_type="multipart/form-data",
     )
@@ -159,14 +141,13 @@ def test_http_cycle(client, name):
 def test_key_can_be_pasted_instead_of_uploaded(client):
     """The decrypt panel accepts the key JSON as text as well as a file."""
     payload = b"pasted-key path" * 100
-    body = post_encrypt(client, payload, "aes").get_json()
-    key_json = base64.b64decode(body["key"]["data"]).decode("utf-8")
+    enc = encrypt_ok(client, payload, "aes")
 
     response = client.post(
         "/decrypt",
         data={
-            "file": (io.BytesIO(base64.b64decode(body["encrypted"]["data"])), "x.enc"),
-            "key_text": key_json,
+            "file": (io.BytesIO(enc.payload), "x.enc"),
+            "key_text": enc.key_bytes.decode("utf-8"),
         },
         content_type="multipart/form-data",
     )
@@ -175,10 +156,10 @@ def test_key_can_be_pasted_instead_of_uploaded(client):
 
 
 def test_decrypt_without_any_key_is_rejected(client):
-    body = post_encrypt(client, b"data", "aes").get_json()
+    enc = encrypt_ok(client, b"data", "aes")
     response = client.post(
         "/decrypt",
-        data={"file": (io.BytesIO(base64.b64decode(body["encrypted"]["data"])), "x.enc")},
+        data={"file": (io.BytesIO(enc.payload), "x.enc")},
         content_type="multipart/form-data",
     )
     assert response.status_code == 400
@@ -191,8 +172,8 @@ def test_decrypt_without_any_key_is_rejected(client):
     "plain.txt",
 ])
 def test_uploaded_filenames_cannot_escape_or_inject(client, supplied):
-    body = post_encrypt(client, b"data", "aes", supplied).get_json()
-    for field in (body["encrypted"]["filename"], body["key"]["filename"]):
+    enc = encrypt_ok(client, b"data", "aes", filename=supplied)
+    for field in (enc.filename, enc.key_filename):
         assert not any(ch in field for ch in "/\\\r\n\"")
 
 
@@ -248,14 +229,14 @@ def test_key_file_naming_the_wrong_algorithm_is_refused(client):
     32-byte key either way -- so the transform runs and emits garbage. Only the
     checksum stands between that and a silently corrupt download.
     """
-    body = post_encrypt(client, b"payload" * 100, "aes").get_json()
-    doc = json.loads(base64.b64decode(body["key"]["data"]))
+    enc = encrypt_ok(client, b"payload" * 100, "aes")
+    doc = json.loads(enc.key_bytes)
     doc["algorithm"] = "chaos"
 
     response = client.post(
         "/decrypt",
         data={
-            "file": (io.BytesIO(base64.b64decode(body["encrypted"]["data"])), "x.enc"),
+            "file": (io.BytesIO(enc.payload), "x.enc"),
             "key_text": json.dumps(doc),
         },
         content_type="multipart/form-data",
@@ -280,13 +261,13 @@ def test_decrypt_reports_which_check_ran(client, name, expected):
     """The page used to claim a checksum matched no matter what happened."""
     alg = ALGORITHMS[name]
     payload = sample_png() if alg.images_only else b"contents" * 50
-    body = post_encrypt(client, payload, name, "photo.png").get_json()
+    enc = encrypt_ok(client, payload, name, filename="photo.png")
 
     response = client.post(
         "/decrypt",
         data={
-            "file": (io.BytesIO(base64.b64decode(body["encrypted"]["data"])), "x.enc"),
-            "key_file": (io.BytesIO(base64.b64decode(body["key"]["data"])), "x.key.json"),
+            "file": (io.BytesIO(enc.payload), "x.enc"),
+            "key_file": (io.BytesIO(enc.key_bytes), "x.key.json"),
         },
         content_type="multipart/form-data",
     )
@@ -297,12 +278,12 @@ def test_decrypt_reports_which_check_ran(client, name, expected):
 
 def test_unicode_filenames_survive_the_round_trip(client):
     """Header values are latin-1 on the wire, so the name travels percent-encoded."""
-    body = post_encrypt(client, b"data" * 20, "aes", "文档 résumé.pdf").get_json()
+    enc = encrypt_ok(client, b"data" * 20, "aes", filename="文档 résumé.pdf")
     response = client.post(
         "/decrypt",
         data={
-            "file": (io.BytesIO(base64.b64decode(body["encrypted"]["data"])), "x.enc"),
-            "key_file": (io.BytesIO(base64.b64decode(body["key"]["data"])), "x.key.json"),
+            "file": (io.BytesIO(enc.payload), "x.enc"),
+            "key_file": (io.BytesIO(enc.key_bytes), "x.key.json"),
         },
         content_type="multipart/form-data",
     )
@@ -315,11 +296,10 @@ def test_unicode_filenames_survive_the_round_trip(client):
 
 def test_shares_decrypt_without_any_key_file(client):
     """Its key file holds no key, so the decrypt panel should not demand one."""
-    body = post_encrypt(client, sample_png(), "visual_crypto", "photo.png").get_json()
+    enc = encrypt_ok(client, sample_png(), "visual_crypto", filename="photo.png")
     response = client.post(
         "/decrypt",
-        data={"file": (io.BytesIO(base64.b64decode(body["encrypted"]["data"])),
-                       "photo.png.shares.zip")},
+        data={"file": (io.BytesIO(enc.payload), "photo.png.shares.zip")},
         content_type="multipart/form-data",
     )
     assert response.status_code == 200
@@ -327,13 +307,35 @@ def test_shares_decrypt_without_any_key_file(client):
 
 
 def test_a_non_share_file_without_a_key_is_still_refused(client):
-    body = post_encrypt(client, b"data" * 20, "aes").get_json()
+    enc = encrypt_ok(client, b"data" * 20, "aes")
     response = client.post(
         "/decrypt",
-        data={"file": (io.BytesIO(base64.b64decode(body["encrypted"]["data"])), "x.enc")},
+        data={"file": (io.BytesIO(enc.payload), "x.enc")},
         content_type="multipart/form-data",
     )
     assert response.status_code == 400
+
+
+def test_an_ordinary_zip_is_refused_politely(client):
+    """Found by fuzzing. A .png name proves nothing about the contents.
+
+    Since any zip holding two of them is routed to visual crypto without a key
+    file, someone dropping in an unrelated archive used to get a 500 and a
+    stack trace in the log instead of a sentence.
+    """
+    import zipfile
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("share0.png", b"")
+        archive.writestr("share1.png", b"not an image either")
+
+    response = client.post(
+        "/decrypt",
+        data={"file": (io.BytesIO(buffer.getvalue()), "holiday-photos.zip")},
+        content_type="multipart/form-data",
+    )
+    assert response.status_code == 400
+    assert "error" in response.get_json()
 
 
 def test_oversized_share_is_refused(monkeypatch):
@@ -377,12 +379,12 @@ def test_each_request_gets_a_fresh_nonce(client):
 
 
 def test_decrypted_files_are_not_cached(client):
-    body = post_encrypt(client, b"sensitive" * 20, "aes").get_json()
+    enc = encrypt_ok(client, b"sensitive" * 20, "aes")
     response = client.post(
         "/decrypt",
         data={
-            "file": (io.BytesIO(base64.b64decode(body["encrypted"]["data"])), "x.enc"),
-            "key_file": (io.BytesIO(base64.b64decode(body["key"]["data"])), "x.key.json"),
+            "file": (io.BytesIO(enc.payload), "x.enc"),
+            "key_file": (io.BytesIO(enc.key_bytes), "x.key.json"),
         },
         content_type="multipart/form-data",
     )

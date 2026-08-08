@@ -7,8 +7,8 @@
     <h1>Encrypt. Decrypt. <em>Verify.</em></h1>
     <p>
         Pick an algorithm, drop in any file, and download the encrypted result
-        with its key. No account, no storage, nothing kept once the response
-        leaves the server.
+        with its key. Runs entirely on your own machine: no account, no
+        storage, nothing kept once you have the result.
     </p>
 </section>
 
@@ -19,6 +19,10 @@
     <div id="appConfig" hidden
          data-max-mb="{{ max_mb }}"
          data-min-passphrase="{{ min_passphrase }}"></div>
+    <!-- Results replace the status line rather than adding to it, so without a
+         live region a screen reader gets silence at the moment it matters most.
+         One announcer for both panels avoids double-reading. -->
+    <p class="visually-hidden" id="announcer" role="status" aria-live="polite"></p>
     <div class="tool">
         <div class="tool-tabs" role="tablist">
             <button class="tool-tab" id="tab-encrypt" role="tab"
@@ -92,11 +96,47 @@
                             <p class="hint" id="modeHint"></p>
                         </div>
 
+                        <div class="field field-gap" id="localField" hidden>
+                            <label class="check">
+                                <input type="checkbox" id="useLocal" checked>
+                                <span class="check-text">Encrypt in this browser</span>
+                            </label>
+                            <p class="hint" id="localHint"></p>
+                        </div>
+
                         <div class="field field-gap" id="passphraseField" hidden>
                             <label class="label" for="passphrase">Passphrase</label>
                             <input class="input" type="password" id="passphrase" name="passphrase"
                                    autocomplete="new-password" spellcheck="false"
                                    placeholder="At least {{ min_passphrase }} characters">
+
+                            <div class="field-stack" id="kdfField">
+                                <span class="label label-soft" id="kdfLabel">Key derivation</span>
+                                <div class="combo" id="kdfCombo" data-open="false">
+                                    <button type="button" class="combo-trigger" id="kdfTrigger"
+                                            aria-haspopup="listbox" aria-expanded="false"
+                                            aria-controls="kdfList">
+                                        <span class="combo-value" id="kdfValue"></span>
+                                        <svg class="icon combo-chevron"><use href="#i-chevron"/></svg>
+                                    </button>
+                                    <ul class="combo-list" id="kdfList" role="listbox"
+                                        aria-labelledby="kdfLabel" tabindex="-1" hidden>
+                                        {% for k in kdfs %}
+                                        <li class="combo-option" id="kdf-opt-{{ k.name }}" role="option"
+                                            data-value="{{ k.name }}" data-label="{{ k.label }}"
+                                            aria-selected="{{ 'true' if k.name == default_kdf else 'false' }}">
+                                            <span class="combo-option-main">
+                                                <span class="combo-option-label">{{ k.label }}</span>
+                                            </span>
+                                            <svg class="icon combo-option-check"><use href="#i-check"/></svg>
+                                        </li>
+                                        {% endfor %}
+                                    </ul>
+                                </div>
+                                <input type="hidden" id="kdf" name="kdf" value="{{ default_kdf }}">
+                                <p class="hint" id="kdfHint"></p>
+                            </div>
+
                             <div class="notice notice-danger">
                                 <svg class="icon"><use href="#i-alert"/></svg>
                                 <span>
@@ -143,6 +183,7 @@
                             <div>
                                 <h3>Encrypted</h3>
                                 <p id="encryptResultMeta"></p>
+                                <p class="where" id="encryptWhere"></p>
                             </div>
                         </div>
 
@@ -150,7 +191,7 @@
                             <svg class="icon"><use href="#i-key"/></svg>
                             <span>
                                 Download <strong>both</strong> files. The key is the only way
-                                back — store it somewhere separate from the encrypted file.
+                                back. Store it somewhere separate from the encrypted file.
                             </span>
                         </div>
 
@@ -158,7 +199,7 @@
                             <svg class="icon"><use href="#i-lock"/></svg>
                             <span>
                                 One file, and it carries everything except the secret. There is no
-                                key file to keep — your passphrase is the whole of it.
+                                key file to keep; your passphrase is the whole of it.
                             </span>
                         </div>
 
@@ -197,12 +238,12 @@
                         </li>
                         <li>
                             <svg class="icon"><use href="#i-lock"/></svg>
-                            <span>In passphrase mode, nothing else at all — the file carries its
+                            <span>In passphrase mode, nothing else at all: the file carries its
                                   own header and the key comes from what you remember.</span>
                         </li>
                         <li>
                             <svg class="icon"><use href="#i-eraser"/></svg>
-                            <span>Nothing on the server. No copy of your file, no copy of your key.</span>
+                            <span>Nothing kept. No copy of your file, no copy of your key.</span>
                         </li>
                     </ul>
 
@@ -248,7 +289,7 @@
                             <svg class="icon"><use href="#i-info"/></svg>
                             <span>
                                 These are visual cryptography shares. The shares themselves are
-                                the secret, so there is no key to supply — just decrypt.
+                                the secret, so there is no key to supply. Just decrypt.
                             </span>
                         </div>
 
@@ -326,6 +367,7 @@
                             <div>
                                 <h3>Recovered</h3>
                                 <p id="decryptResultMeta"></p>
+                                <p class="where" id="decryptWhere"></p>
                             </div>
                         </div>
                         <div class="downloads downloads-single">
@@ -352,12 +394,12 @@
                         <li>
                             <svg class="icon"><use href="#i-shield"/></svg>
                             <span>A passphrase file carries a MAC instead, checked
-                                  <em>before</em> decrypting — so a wrong passphrase costs you
+                                  <em>before</em> decrypting, so a wrong passphrase costs you
                                   nothing but the attempt.</span>
                         </li>
                         <li>
                             <svg class="icon"><use href="#i-alert"/></svg>
-                            <span>Either way a mismatch is reported — you never get handed a
+                            <span>Either way a mismatch is reported: you never get handed a
                                   corrupt file silently, and the page tells you which check ran.</span>
                         </li>
                     </ul>
@@ -452,7 +494,7 @@
                 <h3>Download both files</h3>
                 <p>
                     You get the encrypted file and a <code>.key.json</code>. Keep them
-                    apart — together they are just your original file.
+                    apart. Together they are just your original file.
                 </p>
             </div>
             <div class="tile">
@@ -478,29 +520,28 @@
 
         <div class="grid-3 grid-below">
             <div class="tile">
-                <div class="tile-icon"><svg class="icon icon-lg"><use href="#i-server"/></svg></div>
-                <h3>Encryption runs on the server</h3>
+                <div class="tile-icon"><svg class="icon icon-lg"><use href="#i-lock"/></svg></div>
+                <h3>AES never leaves the tab</h3>
                 <p>
-                    Your file is uploaded, encrypted in memory, and the response is sent.
-                    Nothing is written to disk. But the server does see your plaintext
-                    while it works — this is not end-to-end encryption.
+                    AES-256-GCM is encrypted by your browser through the Web Crypto API.
+                    No request is made at all, so you can watch the network tab stay empty.
+                </p>
+            </div>
+            <div class="tile">
+                <div class="tile-icon"><svg class="icon icon-lg"><use href="#i-server"/></svg></div>
+                <h3>The rest run on this machine</h3>
+                <p>
+                    The other seven go to the Python process you started, on this
+                    computer. It holds the plaintext in memory while it works. Nothing
+                    travels over a network unless you deliberately expose it to one.
                 </p>
             </div>
             <div class="tile">
                 <div class="tile-icon"><svg class="icon icon-lg"><use href="#i-eraser"/></svg></div>
-                <h3>No retention of any kind</h3>
+                <h3>Nothing is stored, anywhere</h3>
                 <p>
-                    There is no database, no upload directory, and no session. Once the
-                    response is sent there is no copy of your file or your key
-                    anywhere on the server.
-                </p>
-            </div>
-            <div class="tile">
-                <div class="tile-icon"><svg class="icon icon-lg"><use href="#i-zap"/></svg></div>
-                <h3>Deploy it properly</h3>
-                <p>
-                    Ships with Flask's development server and no rate limiting. Put it
-                    behind HTTPS and a real WSGI server before exposing it to a network.
+                    No database, no upload directory, no session, no log. Once a result
+                    is handed back there is no copy of your file or your key left.
                 </p>
             </div>
         </div>
@@ -511,6 +552,15 @@
                 <strong>Lose the key file and the data is gone.</strong> There is no
                 recovery, no reset, and no copy. That is the direct consequence of
                 storing nothing.
+            </span>
+        </div>
+
+        <div class="notice notice-neutral">
+            <svg class="icon"><use href="#i-info"/></svg>
+            <span>
+                This is built to be cloned and run locally, not deployed. It uses
+                Flask's development server and has no authentication or rate limiting,
+                so don't put it on a public address as-is.
             </span>
         </div>
     </div>
@@ -532,14 +582,17 @@
                 </summary>
                 <div class="qa-body">
                     <p>
-                        No, and it is worth being clear about that. The file is uploaded and
-                        encrypted on the server, then the result comes back to you. Nothing is
-                        stored, but a compromised server could read the file while it is being
-                        processed.
+                        For AES-256-GCM, yes. It is encrypted in the tab with the Web Crypto
+                        API and no request is made. The result panel says so, and the
+                        network tab will show nothing to look at.
                     </p>
                     <p>
-                        If you need the server never to see your plaintext, the crypto has to
-                        run in the browser via the Web Crypto API. That is a different design.
+                        For the other seven, no. Web Crypto has no Blowfish and no Fernet,
+                        and writing the three educational algorithms a second time in
+                        JavaScript would mean two implementations of an unreviewed cipher
+                        that could quietly disagree about what a file holds. Those go to the
+                        Python process on your machine, which sees the plaintext while it
+                        works. The page tells you which path ran, every time.
                     </p>
                 </div>
             </details>
@@ -553,7 +606,7 @@
                     <p>
                         The file stays encrypted forever. No account holds a backup, because
                         there are no accounts. Keep the <code>.key.json</code> somewhere you
-                        trust — a password manager works well.
+                        trust. A password manager works well.
                     </p>
                 </div>
             </details>
@@ -586,7 +639,7 @@
                     <p>
                         Stacking returns a black-and-white approximation at double the
                         original size, not your original bytes. Print the shares on
-                        transparencies and overlay them — it works with no computer at all.
+                        transparencies and overlay them; it works with no computer at all.
                     </p>
                 </div>
             </details>
@@ -626,5 +679,6 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="{{ url_for('static', filename='js/crypto.js') }}" defer></script>
 <script src="{{ url_for('static', filename='js/app.js') }}" defer></script>
 {% endblock %}

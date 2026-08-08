@@ -113,7 +113,7 @@ def cmd_encrypt(args: argparse.Namespace) -> int:
 
     if args.passphrase:
         secret = _read_passphrase(confirm=True)
-        cipher_key, mac_key, params = envelope.derive(secret)
+        cipher_key, mac_key, params = envelope.derive(secret, name=args.kdf)
         ciphertext, material = spec.encrypt(data, key=cipher_key)
         blob = envelope.wrap(
             args.algorithm, source.name, material, ciphertext, params, mac_key
@@ -203,6 +203,10 @@ def build_parser() -> argparse.ArgumentParser:
     enc.add_argument(
         "--passphrase", "-p", action="store_true",
         help="derive the key from a passphrase and emit one self-contained file",
+    )
+    enc.add_argument(
+        "--kdf", default=envelope.DEFAULT_KDF, choices=list(envelope.KDF_NAMES),
+        help="key derivation function for --passphrase (default: %(default)s)",
     )
     enc.add_argument("--out", "-o", help="output file or directory")
     enc.add_argument("--force", "-f", action="store_true", help="overwrite existing files")

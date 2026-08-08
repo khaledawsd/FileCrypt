@@ -12,13 +12,15 @@ works out which of the three shapes it was handed rather than asking:
 * a visual-crypto share archive -> needs nothing; the shares are the secret
 * anything else                 -> needs the key file
 
-Nothing touches the disk or a database in between. Once a response is sent the
-server has no copy of the file, the key, or the passphrase.
+Nothing touches the disk or a database in between. Once a response is sent this
+process has no copy of the file, the key, or the passphrase.
+
+Note that AES never arrives here at all when the page can help it -- the browser
+does that one itself. See static/js/crypto.js.
 """
 
 from __future__ import annotations
 
-import base64
 import posixpath
 from datetime import datetime
 from urllib.parse import quote
@@ -71,8 +73,41 @@ def index():
         default_algorithm_label=ALGORITHMS[DEFAULT_ALGORITHM].label,
         max_mb=current_app.config["MAX_CONTENT_LENGTH"] // (1024 * 1024),
         min_passphrase=envelope.MIN_PASSPHRASE,
+        kdfs=[
+            {"name": n, "label": envelope.KDF_LABELS[n]} for n in envelope.KDF_NAMES
+        ],
+        default_kdf=envelope.DEFAULT_KDF,
         year=datetime.now().year,
     )
+
+
+def _encrypted_response(spec, filename, payload, key_filename, key_bytes):
+    """Return the ciphertext, and the key file when there is one, as one body.
+
+    The response used to be JSON with both artifacts base64-encoded, which meant
+    the ciphertext, its base64, and the assembled JSON string all existed at
+    once -- roughly five copies of the upload resident at the peak, which is
+    what forced the modest size ceiling. Framing the two artifacts in a binary
+    body removes the base64 step entirely::
+
+        uint32 big-endian key length | key JSON | ciphertext
+
+    A zero length means passphrase mode, where the header travels inside the
+    ciphertext and there is no separate key file. Errors are still JSON; only
+    the success path is binary.
+    """
+    key_bytes = key_bytes or b""
+    body = len(key_bytes).to_bytes(4, "big") + key_bytes + payload
+
+    response = current_app.response_class(body, mimetype="application/octet-stream")
+    response.headers["X-Algorithm"] = spec.name
+    response.headers["X-Algorithm-Label"] = quote(spec.label, safe="")
+    response.headers["X-Filename"] = quote(filename, safe="")
+    response.headers["X-Lossy"] = "1" if spec.lossy else "0"
+    response.headers["X-Passphrase-Mode"] = "0" if key_filename else "1"
+    if key_filename:
+        response.headers["X-Key-Filename"] = quote(key_filename, safe="")
+    return response
 
 
 @bp.route("/encrypt", methods=["POST"])
@@ -92,6 +127,10 @@ def encrypt():
             {"error": f"{spec.label} has no key for a passphrase to replace."}
         ), 400
 
+    kdf = request.form.get("kdf") or envelope.DEFAULT_KDF
+    if passphrase and kdf not in envelope.KDF_NAMES:
+        return jsonify({"error": f"Unknown key derivation function: {kdf}"}), 400
+
     data = upload.read()
     if not data:
         return jsonify({"error": "That file is empty."}), 400
@@ -101,25 +140,13 @@ def encrypt():
     try:
         if passphrase:
             passphrase = envelope.check_passphrase(passphrase)
-            cipher_key, mac_key, params = envelope.derive(passphrase)
+            cipher_key, mac_key, params = envelope.derive(passphrase, name=kdf)
             ciphertext, material = spec.encrypt(data, key=cipher_key)
             blob = envelope.wrap(
                 algorithm, original, material, ciphertext, params, mac_key
             )
-            return jsonify(
-                {
-                    "ok": True,
-                    "algorithm": algorithm,
-                    "algorithm_label": spec.label,
-                    "lossy": spec.lossy,
-                    "passphrase_mode": True,
-                    "encrypted": {
-                        "filename": original + envelope.EXTENSION,
-                        "size": len(blob),
-                        "data": base64.b64encode(blob).decode(),
-                    },
-                    "key": None,
-                }
+            return _encrypted_response(
+                spec, original + envelope.EXTENSION, blob, None, None
             )
 
         ciphertext, material = spec.encrypt(data)
@@ -129,28 +156,11 @@ def encrypt():
         return jsonify({"error": str(exc)}), 400
     except Exception:
         current_app.logger.exception("Encryption failed (%s)", algorithm)
-        return jsonify({"error": "Encryption failed. See the server log."}), 500
+        return jsonify({"error": "Encryption failed. See the terminal running the app."}), 500
 
     key_bytes = keyfile.dumps(keyfile.build(algorithm, original, material, data))
-
-    return jsonify(
-        {
-            "ok": True,
-            "algorithm": algorithm,
-            "algorithm_label": spec.label,
-            "lossy": spec.lossy,
-            "passphrase_mode": False,
-            "encrypted": {
-                "filename": original + spec.extension,
-                "size": len(ciphertext),
-                "data": base64.b64encode(ciphertext).decode(),
-            },
-            "key": {
-                "filename": original + ".key.json",
-                "size": len(key_bytes),
-                "data": base64.b64encode(key_bytes).decode(),
-            },
-        }
+    return _encrypted_response(
+        spec, original + spec.extension, ciphertext, original + ".key.json", key_bytes
     )
 
 
@@ -213,7 +223,7 @@ def decrypt():
         return jsonify({"error": str(exc)}), 400
     except Exception:
         current_app.logger.exception("Decryption failed (%s)", doc["algorithm"])
-        return jsonify({"error": "Decryption failed. See the server log."}), 500
+        return jsonify({"error": "Decryption failed. See the terminal running the app."}), 500
 
     name = safe_name(doc.get("original_filename", ""), fallback="recovered")
     if spec.lossy:

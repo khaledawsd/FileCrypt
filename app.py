@@ -88,4 +88,9 @@ if __name__ == "__main__":
     # WSGI server imports `app` above and keeps the default caching.
     app.config["TEMPLATES_AUTO_RELOAD"] = True
     app.jinja_env.auto_reload = True
-    app.run(debug=os.environ.get("FLASK_DEBUG") == "1")
+    # PORT so a second instance can run alongside the first -- handy when
+    # comparing behaviour across a change.
+    app.run(
+        port=int(os.environ.get("PORT", "5000")),
+        debug=os.environ.get("FLASK_DEBUG") == "1",
+    )

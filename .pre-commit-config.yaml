@@ -1,0 +1,13 @@
+# Opt-in. Nothing runs until someone does:
+#
+#     pip install pre-commit && pre-commit install
+#
+# Deliberately only linting, no formatter. Adding ruff-format here would
+# reformat the entire codebase on first run, turning a hook installation into a
+# thousand-line diff that buries whatever you were actually committing.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.2
+    hooks:
+      - id: ruff
+        args: [--fix]

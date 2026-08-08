@@ -27,20 +27,6 @@
         return value.toFixed(value < 10 ? 1 : 0) + " " + units[i];
     }
 
-    /* Decoded in chunks so a large file does not build one enormous array. */
-    function base64ToBlob(b64) {
-        var binary = atob(b64);
-        var chunk = 0x8000;
-        var parts = [];
-        for (var offset = 0; offset < binary.length; offset += chunk) {
-            var slice = binary.slice(offset, offset + chunk);
-            var bytes = new Uint8Array(slice.length);
-            for (var i = 0; i < slice.length; i++) bytes[i] = slice.charCodeAt(i);
-            parts.push(bytes);
-        }
-        return new Blob(parts, { type: "application/octet-stream" });
-    }
-
     /* Old object URLs are revoked so repeated runs do not pin memory. */
     function attachDownload(anchor, blob, filename) {
         if (anchor.dataset.url) URL.revokeObjectURL(anchor.dataset.url);
@@ -50,9 +36,27 @@
         anchor.download = filename;
     }
 
+    /* Single polite live region for both panels. Announcing from one place
+     * keeps a screen reader from reading a result twice. */
+    var announceTimer = null;
+
+    function announce(message) {
+        var region = $("announcer");
+        region.textContent = "";
+        /* Re-setting identical text is not a change, so nothing would be read;
+         * clearing first and setting a tick later makes each message fresh.
+         *
+         * setTimeout rather than requestAnimationFrame: rAF does not fire at all
+         * while the tab is hidden, so starting an encryption and switching away
+         * would drop the announcement -- the moment it matters most. */
+        clearTimeout(announceTimer);
+        announceTimer = setTimeout(function () { region.textContent = message; }, 50);
+    }
+
     function showStatus(el, message, kind) {
         el.className = "status status-" + kind;
         el.innerHTML = "";
+        announce(message);
         if (kind === "info") {
             var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
             svg.setAttribute("class", "icon spin");
@@ -113,14 +117,21 @@
         });
     }
 
-    /* Errors always come back as JSON, whatever responseType was asked for. */
+    /* Errors always come back as JSON, whatever responseType was asked for --
+     * so the body may be a Blob, an ArrayBuffer, or already text. */
     function readError(body) {
+        var text;
         if (body instanceof Blob) {
-            return body.text().then(function (text) {
-                try { return JSON.parse(text); } catch (e) { return {}; }
+            return body.text().then(function (decoded) {
+                try { return JSON.parse(decoded); } catch (e) { return {}; }
             });
         }
-        try { return Promise.resolve(JSON.parse(body)); } catch (e) { return Promise.resolve({}); }
+        if (body instanceof ArrayBuffer) {
+            text = new TextDecoder().decode(new Uint8Array(body));
+        } else {
+            text = body;
+        }
+        try { return Promise.resolve(JSON.parse(text)); } catch (e) { return Promise.resolve({}); }
     }
 
     function progressWriter(wrap, bar) {
@@ -350,6 +361,80 @@
         };
     }
 
+    /* ------------------------------------------------- where work happens */
+    /* AES is the only algorithm WebCrypto can do, and crypto.subtle exists only
+     * in a secure context -- so over plain http to anything but localhost this
+     * is false and everything falls back to the local Python process. */
+    function localAvailable() {
+        return window.FileCryptWeb && FileCryptWeb.available();
+    }
+
+    function localHandles(name) {
+        return name === "aes" && localAvailable();
+    }
+
+    /* Mirrors routes.crypto.safe_name so a file encrypted in the browser is
+     * named the same as one the Python side produced. */
+    var UNSAFE_NAME_CHARS = "<>:\"/\\|?*";
+
+    function safeName(name, fallback) {
+        name = String(name || "").replace(/\\/g, "/");
+        name = name.slice(name.lastIndexOf("/") + 1).trim();
+
+        /* Character-by-character rather than a regex class: the set includes
+         * every control character, and writing those as literals in the source
+         * makes the file read as binary to grep and invites an editor to mangle
+         * them. */
+        var cleaned = "";
+        for (var i = 0; i < name.length; i++) {
+            if (UNSAFE_NAME_CHARS.indexOf(name.charAt(i)) === -1 &&
+                name.charCodeAt(i) >= 32) {
+                cleaned += name.charAt(i);
+            }
+        }
+        cleaned = cleaned.replace(/^[. ]+|[. ]+$/g, "");
+        return cleaned.slice(0, 120) || (fallback || "file");
+    }
+
+    function readFile(file) {
+        return new Promise(function (resolve, reject) {
+            var reader = new FileReader();
+            reader.onload = function (e) { resolve(new Uint8Array(e.target.result)); };
+            reader.onerror = function () { reject(new Error("could not read that file")); };
+            reader.readAsArrayBuffer(file);
+        });
+    }
+
+    function blobOf(bytes) {
+        return new Blob([bytes], { type: "application/octet-stream" });
+    }
+
+    /* The success body is `uint32 key length | key JSON | ciphertext`. The
+     * response used to be JSON with both halves base64-encoded, which held
+     * about five copies of the upload in memory at the peak. */
+    function unframe(buffer, result) {
+        var bytes = new Uint8Array(buffer);
+        if (bytes.length < 4) throw new Error("the app sent a truncated response");
+        var keyLength = new DataView(buffer).getUint32(0, false);
+        if (4 + keyLength > bytes.length) {
+            throw new Error("the app sent a malformed response");
+        }
+        var header = function (name) {
+            var value = result.header(name);
+            if (!value) return null;
+            try { return decodeURIComponent(value); } catch (e) { return value; }
+        };
+        return {
+            payload: bytes.subarray(4 + keyLength),
+            filename: header("X-Filename") || "encrypted.bin",
+            keyBytes: keyLength ? bytes.subarray(4, 4 + keyLength) : null,
+            keyFilename: keyLength ? header("X-Key-Filename") : null,
+            algorithmLabel: header("X-Algorithm-Label") || "",
+            lossy: result.header("X-Lossy") === "1",
+            local: false
+        };
+    }
+
     /* --------------------------------------------------------- encrypt */
     var algorithm = $("algorithm");
     var encryptInput = $("encryptInput");
@@ -360,9 +445,52 @@
     var passphraseField = $("passphraseField");
     var modeKeyfile = $("modeKeyfile");
     var modePassphrase = $("modePassphrase");
+    var useLocal = $("useLocal");
+    var kdfInput = $("kdf");
 
     var algorithmCombo = initCombo($("algorithmCombo"), algorithm);
+    var kdfCombo = initCombo($("kdfCombo"), kdfInput);
     var usePassphrase = false;
+
+    /* Client-side encryption implies PBKDF2: WebCrypto has no scrypt and no
+     * Argon2, and shipping a JS implementation of either would mean two
+     * versions of the same primitive that could drift apart. */
+    function effectiveKdf() {
+        return localChosen() ? "pbkdf2" : kdfInput.value;
+    }
+
+    function localChosen() {
+        return localHandles(algorithm.value) && useLocal.checked;
+    }
+
+    function refreshLocal() {
+        var possible = localHandles(algorithm.value);
+        $("localField").hidden = !possible && localAvailable();
+        useLocal.disabled = !possible;
+        if (!possible) useLocal.checked = false;
+
+        $("localHint").textContent = possible
+            ? "Encrypted here in the tab. No request is made; the Python process never sees it."
+            : "";
+
+        /* Saying "PBKDF2 is in use" is more honest than leaving a control that
+         * looks live but is ignored. */
+        var overridden = localChosen();
+        $("kdfCombo").hidden = overridden;
+        $("kdfHint").textContent = overridden
+            ? "PBKDF2, because that is the only password KDF browsers offer natively. " +
+              "Untick the box above to hand it to the local app and choose another."
+            : "";
+
+        if (!localAvailable() && window.isSecureContext === false) {
+            $("localField").hidden = false;
+            useLocal.checked = false;
+            useLocal.disabled = true;
+            $("localHint").textContent =
+                "In-browser encryption needs a secure context (https, or localhost). " +
+                "This page is on plain http, so the local app does the work.";
+        }
+    }
 
     function setMode(wantPassphrase) {
         var allowed = Boolean(algorithmCombo.selectedOption.dataset.supportsPassphrase);
@@ -372,6 +500,11 @@
         modePassphrase.classList.toggle("is-selected", usePassphrase);
         modeKeyfile.setAttribute("aria-checked", usePassphrase ? "false" : "true");
         modePassphrase.setAttribute("aria-checked", usePassphrase ? "true" : "false");
+        /* Roving tabindex: a radiogroup is one stop in the tab order, and the
+         * arrow keys move within it. Leaving both focusable would make Tab
+         * walk through the options, which is the listbox behaviour, not this. */
+        modeKeyfile.tabIndex = usePassphrase ? -1 : 0;
+        modePassphrase.tabIndex = usePassphrase ? 0 : -1;
         modePassphrase.disabled = !allowed;
         passphraseField.hidden = !usePassphrase;
         if (!usePassphrase) passphrase.value = "";
@@ -379,13 +512,45 @@
         $("modeHint").textContent = !allowed
             ? "This algorithm has no key for a passphrase to replace."
             : usePassphrase
-                ? "One self-contained file. Nothing to store but the passphrase — " +
+                ? "One self-contained file. Nothing to store but the passphrase, " +
                   "and no way back without it."
                 : "Two files: the encrypted one and a key file you must keep.";
+        refreshLocal();
     }
 
     modeKeyfile.addEventListener("click", function () { setMode(false); });
     modePassphrase.addEventListener("click", function () { setMode(true); });
+    useLocal.addEventListener("change", refreshLocal);
+    kdfCombo.onChange(refreshLocal);
+
+    /* role="radio" promises arrow-key navigation; without this the control
+     * claims a keyboard interface it does not have. Selection follows focus,
+     * which is the expected behaviour for a radio group. */
+    [modeKeyfile, modePassphrase].forEach(function (button) {
+        button.addEventListener("keydown", function (e) {
+            var wantPassphrase;
+            switch (e.key) {
+                case "ArrowRight":
+                case "ArrowDown":
+                case "ArrowLeft":
+                case "ArrowUp":
+                    /* Two options, so any arrow simply toggles. */
+                    wantPassphrase = button === modeKeyfile;
+                    break;
+                case "Home":
+                    wantPassphrase = false;
+                    break;
+                case "End":
+                    wantPassphrase = true;
+                    break;
+                default:
+                    return;
+            }
+            e.preventDefault();
+            setMode(wantPassphrase);
+            (wantPassphrase ? modePassphrase : modeKeyfile).focus();
+        });
+    });
 
     function refreshAlgorithm() {
         var option = algorithmCombo.selectedOption;
@@ -410,7 +575,8 @@
             ? "Images only for this algorithm · up to " + MAX_MB + " MB"
             : "Any file type · up to " + MAX_MB + " MB";
 
-        /* Re-evaluated because the new algorithm may not support passphrases. */
+        /* Re-evaluated because the new algorithm may not support passphrases,
+         * and may not be one the browser can handle. */
         setMode(usePassphrase);
     }
 
@@ -424,6 +590,53 @@
         encryptStatus.hidden = true;
     });
     wireClear($("encryptClear"), encryptInput, $("encryptChosen"));
+
+    function encryptLocally(file) {
+        var name = safeName(file.name);
+        return readFile(file).then(function (bytes) {
+            if (!bytes.length) throw new Error("That file is empty.");
+            if (usePassphrase) {
+                return FileCryptWeb.encryptWithPassphrase(
+                    bytes, name, passphrase.value.trim()
+                ).then(function (sealed) {
+                    return {
+                        payload: sealed, filename: name + ".fcx",
+                        keyBytes: null, keyFilename: null,
+                        algorithmLabel: "AES-256-GCM", lossy: false, local: true
+                    };
+                });
+            }
+            return FileCryptWeb.encryptWithKeyFile(bytes, name).then(function (out) {
+                return {
+                    payload: out.payload, filename: name + ".enc",
+                    keyBytes: new TextEncoder().encode(out.keyJson),
+                    keyFilename: name + ".key.json",
+                    algorithmLabel: "AES-256-GCM", lossy: false, local: true
+                };
+            });
+        });
+    }
+
+    function encryptOnServer(file, onProgress) {
+        var body = new FormData();
+        body.append("file", file);
+        body.append("algorithm", algorithm.value);
+        if (usePassphrase) {
+            body.append("passphrase", passphrase.value.trim());
+            body.append("kdf", effectiveKdf());
+        }
+        return post("/encrypt", body, {
+            responseType: "arraybuffer",
+            onProgress: onProgress
+        }).then(function (result) {
+            if (!result.ok) {
+                return readError(result.body).then(function (data) {
+                    throw new Error(data.error || "Encryption failed.");
+                });
+            }
+            return unframe(result.body, result);
+        });
+    }
 
     encryptForm.addEventListener("submit", function (event) {
         event.preventDefault();
@@ -441,61 +654,68 @@
             return;
         }
 
-        var body = new FormData();
-        body.append("file", encryptInput.files[0]);
-        body.append("algorithm", algorithm.value);
-        if (usePassphrase) body.append("passphrase", passphrase.value.trim());
-
+        var file = encryptInput.files[0];
+        var local = localChosen();
         var wrap = $("encryptProgress");
         var bar = $("encryptProgressBar");
 
         encryptResult.hidden = true;
         resetProgress(wrap, bar);
-        showStatus(encryptStatus, "Encrypting…", "info");
+        showStatus(
+            encryptStatus,
+            local ? "Encrypting in your browser…" : "Encrypting…",
+            "info"
+        );
         busy(encryptForm, true, "Encrypting…");
 
-        post("/encrypt", body, { onProgress: progressWriter(wrap, bar) })
-            .then(function (result) {
-                resetProgress(wrap, bar);
-                if (!result.ok) {
-                    return readError(result.body).then(function (data) {
-                        showStatus(encryptStatus, data.error || "Encryption failed.", "error");
-                    });
-                }
-                var data = JSON.parse(result.body);
+        var work = local
+            ? encryptLocally(file)
+            : encryptOnServer(file, progressWriter(wrap, bar));
 
-                attachDownload($("downloadPayload"), base64ToBlob(data.encrypted.data),
-                               data.encrypted.filename);
-                $("payloadName").textContent = data.encrypted.filename;
-                $("payloadSize").textContent = formatSize(data.encrypted.size);
+        work.then(function (out) {
+            resetProgress(wrap, bar);
 
-                /* Passphrase mode returns one file and no key: the header rides
-                 * inside the ciphertext, so there is nothing else to hand over. */
-                var sealed = !data.key;
-                $("downloadKey").hidden = sealed;
-                $("keyfileNotice").hidden = sealed;
-                $("passphraseNotice").hidden = !sealed;
-                $("encryptDownloads").classList.toggle("downloads-single", sealed);
-                if (!sealed) {
-                    attachDownload($("downloadKey"), base64ToBlob(data.key.data),
-                                   data.key.filename);
-                    $("keyName").textContent = data.key.filename;
-                    $("keySize").textContent = formatSize(data.key.size);
-                }
+            attachDownload($("downloadPayload"), blobOf(out.payload), out.filename);
+            $("payloadName").textContent = out.filename;
+            $("payloadSize").textContent = formatSize(out.payload.length);
 
-                $("encryptResultMeta").textContent = data.lossy
-                    ? data.algorithm_label + " — stacking the shares returns a " +
-                      "black-and-white approximation, not the original file."
-                    : data.algorithm_label + (sealed ? " · passphrase protected" : "");
+            /* Passphrase mode returns one file and no key: the header rides
+             * inside the ciphertext, so there is nothing else to hand over. */
+            var sealed = !out.keyBytes;
+            $("downloadKey").hidden = sealed;
+            $("keyfileNotice").hidden = sealed;
+            $("passphraseNotice").hidden = !sealed;
+            $("encryptDownloads").classList.toggle("downloads-single", sealed);
+            if (!sealed) {
+                attachDownload($("downloadKey"), blobOf(out.keyBytes), out.keyFilename);
+                $("keyName").textContent = out.keyFilename;
+                $("keySize").textContent = formatSize(out.keyBytes.length);
+            }
 
-                encryptStatus.hidden = true;
-                encryptResult.hidden = false;
-            })
-            .catch(function (error) {
-                resetProgress(wrap, bar);
-                showStatus(encryptStatus, "Could not reach the server: " + error.message, "error");
-            })
-            .then(function () { busy(encryptForm, false); });
+            $("encryptResultMeta").textContent = out.lossy
+                ? out.algorithmLabel + ": stacking the shares returns a " +
+                  "black-and-white approximation, not the original file."
+                : out.algorithmLabel + (sealed ? " · passphrase protected" : "");
+
+            var where = $("encryptWhere");
+            where.dataset.local = out.local ? "true" : "false";
+            where.textContent = out.local
+                ? "Encrypted in your browser. The file never left the tab."
+                : "Encrypted by the app on this machine, then discarded.";
+
+            encryptStatus.hidden = true;
+            encryptResult.hidden = false;
+            announce(
+                "Encrypted " + (out.local ? "in your browser" : "by the local app") + ". " +
+                (sealed
+                    ? "One file ready to download: " + out.filename
+                    : "Two files ready to download: " + out.filename +
+                      " and " + out.keyFilename)
+            );
+        }).catch(function (error) {
+            resetProgress(wrap, bar);
+            showStatus(encryptStatus, error.message || "Encryption failed.", "error");
+        }).then(function () { busy(encryptForm, false); });
     });
 
     /* --------------------------------------------------------- decrypt */
@@ -520,6 +740,14 @@
          * strand someone whose ciphertext merely happens to start with "PK". */
         $("keyBlock").hidden = mode === "passphrase";
         if (mode === "passphrase") decryptPassphrase.focus();
+
+        /* The form rearranges itself on file pick. Announce what it now wants,
+         * or a screen reader user is left looking for a field that has gone. */
+        announce({
+            passphrase: "This file needs a passphrase. Key file not required.",
+            shares: "Visual cryptography shares detected. No key required.",
+            keyfile: "This file needs its key file."
+        }[mode]);
     }
 
     $("keyHelpToggle").addEventListener("click", function () {
@@ -588,6 +816,74 @@
         none: "Recovered. No checksum was stored for this file, so nothing was verified."
     };
 
+    /* Try the browser first, but only when it can actually finish the job: AES,
+     * and for an envelope a KDF WebCrypto has. Anything else -- scrypt, Argon2,
+     * another algorithm -- returns null and it goes to the local app. */
+    function decryptLocally(file) {
+        if (!localAvailable()) return Promise.resolve(null);
+
+        return readFile(file).then(function (bytes) {
+            if (decryptMode === "passphrase") {
+                if (!FileCryptWeb.canOpenEnvelope(bytes)) return null;
+                return FileCryptWeb.decryptWithPassphrase(
+                    bytes, decryptPassphrase.value.trim()
+                ).then(function (out) {
+                    return {
+                        plaintext: out.plaintext,
+                        filename: safeName(out.filename, "recovered"),
+                        verified: out.verified, lossy: false, local: true
+                    };
+                });
+            }
+
+            if (decryptMode !== "keyfile" || !keyText.value.trim()) return null;
+            var doc = FileCryptWeb.parseKeyFile(keyText.value);
+            if (!FileCryptWeb.canOpenKeyFile(doc)) return null;
+            return FileCryptWeb.decryptWithKeyFile(bytes, doc).then(function (out) {
+                return {
+                    plaintext: out.plaintext,
+                    filename: safeName(doc.original_filename, "recovered"),
+                    verified: out.verified, lossy: false, local: true
+                };
+            });
+        });
+    }
+
+    function decryptOnServer(file, onProgress) {
+        var body = new FormData();
+        body.append("file", file);
+        if (decryptMode === "passphrase") {
+            body.append("passphrase", decryptPassphrase.value.trim());
+        } else if (keyInput.files.length) {
+            body.append("key_file", keyInput.files[0]);
+        } else if (keyText.value.trim()) {
+            body.append("key_text", keyText.value);
+        }
+
+        return post("/decrypt", body, {
+            responseType: "blob",
+            onProgress: onProgress
+        }).then(function (result) {
+            if (!result.ok) {
+                return readError(result.body).then(function (data) {
+                    throw new Error(data.error || "Decryption failed.");
+                });
+            }
+            var raw = result.header("X-Original-Filename");
+            var name = "recovered";
+            if (raw) {
+                try { name = decodeURIComponent(raw); } catch (e) { name = raw; }
+            }
+            return {
+                plaintext: result.body,          // a Blob, which is fine here
+                filename: name,
+                verified: result.header("X-Verified") || "none",
+                lossy: result.header("X-Lossy") === "1",
+                local: false
+            };
+        });
+    }
+
     decryptForm.addEventListener("submit", function (event) {
         event.preventDefault();
 
@@ -606,16 +902,7 @@
             return;
         }
 
-        var body = new FormData();
-        body.append("file", payloadInput.files[0]);
-        if (decryptMode === "passphrase") {
-            body.append("passphrase", decryptPassphrase.value.trim());
-        } else if (keyInput.files.length) {
-            body.append("key_file", keyInput.files[0]);
-        } else if (keyText.value.trim()) {
-            body.append("key_text", keyText.value);
-        }
-
+        var file = payloadInput.files[0];
         var wrap = $("decryptProgress");
         var bar = $("decryptProgressBar");
 
@@ -624,46 +911,45 @@
         showStatus(decryptStatus, "Decrypting…", "info");
         busy(decryptForm, true, "Decrypting…");
 
-        post("/decrypt", body, {
-            responseType: "blob",
-            onProgress: progressWriter(wrap, bar)
-        })
-            .then(function (result) {
-                resetProgress(wrap, bar);
-                /* Success streams the file back; failure arrives as JSON. */
-                if (!result.ok) {
-                    return readError(result.body).then(function (data) {
-                        showStatus(decryptStatus, data.error || "Decryption failed.", "error");
-                    });
-                }
-                var raw = result.header("X-Original-Filename");
-                var name = "recovered";
-                if (raw) {
-                    try { name = decodeURIComponent(raw); } catch (e) { name = raw; }
-                }
+        decryptLocally(file).catch(function (error) {
+            /* A local attempt that got far enough to fail on the passphrase or
+             * the checksum is a real answer, not a reason to retry on the
+             * local app -- re-sending would hand over a file the user believes
+             * never left the tab. */
+            throw error;
+        }).then(function (out) {
+            if (out) return out;
+            return decryptOnServer(file, progressWriter(wrap, bar));
+        }).then(function (out) {
+            resetProgress(wrap, bar);
 
-                attachDownload($("downloadPlain"), result.body, name);
-                $("plainName").textContent = name;
-                $("plainSize").textContent = formatSize(result.body.size);
+            var blob = out.plaintext instanceof Blob ? out.plaintext : blobOf(out.plaintext);
+            attachDownload($("downloadPlain"), blob, out.filename);
+            $("plainName").textContent = out.filename;
+            $("plainSize").textContent = formatSize(blob.size);
 
-                /* Say what actually happened rather than always claiming a
-                 * checksum matched -- an envelope is MAC-checked, and visual
-                 * crypto shares carry no checksum at all. */
-                var verified = result.header("X-Verified") || "none";
-                var meta = VERIFIED_TEXT[verified] || VERIFIED_TEXT.none;
-                if (result.header("X-Lossy") === "1") {
-                    meta = "Shares stacked. This is a black-and-white approximation at " +
-                           "double size, not the original file.";
-                }
-                $("decryptResultMeta").textContent = meta;
+            /* Say what actually happened rather than always claiming a
+             * checksum matched -- an envelope is MAC-checked, and visual
+             * crypto shares carry no checksum at all. */
+            var meta = VERIFIED_TEXT[out.verified] || VERIFIED_TEXT.none;
+            if (out.lossy) {
+                meta = "Shares stacked. This is a black-and-white approximation at " +
+                       "double size, not the original file.";
+            }
+            $("decryptResultMeta").textContent = meta;
 
-                decryptStatus.hidden = true;
-                decryptResult.hidden = false;
-            })
-            .catch(function (error) {
-                resetProgress(wrap, bar);
-                showStatus(decryptStatus, "Could not reach the server: " + error.message, "error");
-            })
-            .then(function () { busy(decryptForm, false); });
+            var where = $("decryptWhere");
+            where.dataset.local = out.local ? "true" : "false";
+            where.textContent = out.local
+                ? "Decrypted in your browser. The file never left the tab."
+                : "Decrypted by the app on this machine, then discarded.";
+
+            decryptStatus.hidden = true;
+            decryptResult.hidden = false;
+            announce("Recovered " + out.filename + ". " + meta);
+        }).catch(function (error) {
+            resetProgress(wrap, bar);
+            showStatus(decryptStatus, error.message || "Decryption failed.", "error");
+        }).then(function () { busy(decryptForm, false); });
     });
 })();

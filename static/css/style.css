@@ -68,7 +68,7 @@
     --accent-soft: #2a1408;
     --accent-border: #7c2d12;
 
-    /* Bright orange carries dark text here — 7.3:1, and it keeps the accent
+    /* Bright orange carries dark text here at 7.3:1, and it keeps the accent
        vivid against a near-black page instead of muddying it. */
     --btn-fill: #f97316;
     --btn-fill-hover: #fb923c;
@@ -1398,4 +1398,48 @@ svg { display: block; }
     border-radius: 999px;
     background: var(--accent);
     transition: width .12s linear;
+}
+
+/* ------------------------------------------- client-side vs server-side */
+/* Where the encryption ran is the most important thing on the result panel
+   for anyone who cares about the trust model, so it gets its own line rather
+   than being folded into the algorithm label. */
+
+.where {
+    margin-top: .25rem;
+    font-size: .8125rem;
+    font-weight: 500;
+    color: var(--text-faint);
+}
+
+.where[data-local="true"] {
+    color: var(--accent-text);
+}
+
+.check {
+    display: flex;
+    align-items: flex-start;
+    gap: .5rem;
+    cursor: pointer;
+}
+
+.check input {
+    margin-top: .15rem;
+    width: 1rem;
+    height: 1rem;
+    accent-color: var(--accent);
+    cursor: pointer;
+    flex: none;
+}
+
+.check input:disabled,
+.check input:disabled + .check-text {
+    opacity: .5;
+    cursor: not-allowed;
+}
+
+.check-text {
+    font-size: .875rem;
+    font-weight: 500;
+    color: var(--text);
 }

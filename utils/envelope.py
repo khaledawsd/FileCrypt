@@ -33,7 +33,12 @@ import json
 import os
 from datetime import UTC, datetime
 from hashlib import sha256
+from typing import NoReturn
 
+from argon2.low_level import Type as _Argon2Type
+from argon2.low_level import hash_secret_raw as _argon2_raw
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
 from .encryption_utils import ALGORITHMS, KEY_BYTES, DecryptionError
@@ -52,20 +57,97 @@ _MAC_BYTES = 32
 _SALT_BYTES = 16
 _MAX_HEADER = 64 * 1024
 
-# scrypt at its "interactive" setting: roughly 32 MB and a tenth of a second per
-# attempt. The cost is the point -- it is what makes guessing expensive.
-_N, _R, _P = 2 ** 15, 8, 1
 
-# These parameters arrive inside an attacker-supplied file and are read *before*
-# the MAC can be checked, because deriving the MAC key is what they are for.
-# scrypt allocates 128*N*r bytes, so an unbounded N is a memory bomb.
-_N_RANGE = (2 ** 14, 2 ** 17)
-_R_RANGE = (1, 16)
-_P_RANGE = (1, 4)
-
-
-def _fail(message: str) -> None:
+def _fail(message: str) -> NoReturn:
+    """Always raises. Annotated NoReturn so a check that calls it narrows types
+    afterwards the same way a bare `raise` would."""
     raise DecryptionError(message)
+
+
+# --------------------------------------------------------------------------
+# Key derivation functions
+# --------------------------------------------------------------------------
+# Three, for three different reasons:
+#
+#   scrypt    -- the default. Memory-hard, no extra dependency, and what every
+#                file written before the others existed uses.
+#   argon2id  -- the current best-practice answer. Opt-in, because making it the
+#                default would produce files older builds cannot read.
+#   pbkdf2    -- the weakest of the three, and present because WebCrypto offers
+#                no other password KDF. Without it the browser could not write a
+#                file this server can read, which is the whole point of doing
+#                the encryption client-side.
+#
+# Every parameter below arrives inside an attacker-supplied file and is used
+# *before* the MAC can be checked -- deriving the MAC key is what they are for.
+# Each KDF therefore declares hard bounds. Unbounded, scrypt's N or Argon2's
+# memory_cost is a straightforward way to make the process allocate gigabytes.
+
+DEFAULT_KDF = "scrypt"
+
+_SCRYPT = {"n": 2 ** 15, "r": 8, "p": 1}
+_ARGON2 = {"time_cost": 3, "memory_cost": 65536, "parallelism": 4}
+_PBKDF2 = {"iterations": 600_000}
+
+_SALT_RANGE = (8, 64)
+
+
+def _int(params: dict, key: str, low: int, high: int) -> int:
+    try:
+        value = int(params[key])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise DecryptionError(f"The header's {key} parameter is malformed.") from exc
+    if not low <= value <= high:
+        _fail(f"The header's {key} parameter is outside the supported range.")
+    return value
+
+
+def _scrypt_derive(passphrase: bytes, salt: bytes, params: dict, length: int) -> bytes:
+    n = _int(params, "n", 2 ** 14, 2 ** 17)
+    if n & (n - 1):
+        _fail("scrypt's n parameter must be a power of two.")
+    r = _int(params, "r", 1, 16)
+    p = _int(params, "p", 1, 4)
+    return Scrypt(salt=salt, length=length, n=n, r=r, p=p).derive(passphrase)
+
+
+def _argon2_derive(passphrase: bytes, salt: bytes, params: dict, length: int) -> bytes:
+    return _argon2_raw(
+        secret=passphrase,
+        salt=salt,
+        time_cost=_int(params, "time_cost", 1, 10),
+        memory_cost=_int(params, "memory_cost", 8 * 1024, 512 * 1024),  # KiB
+        parallelism=_int(params, "parallelism", 1, 8),
+        hash_len=length,
+        type=_Argon2Type.ID,
+    )
+
+
+def _pbkdf2_derive(passphrase: bytes, salt: bytes, params: dict, length: int) -> bytes:
+    return PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=length,
+        salt=salt,
+        # The floor is the security-relevant bound here; the ceiling only stops
+        # a crafted file from pinning a CPU.
+        iterations=_int(params, "iterations", 100_000, 5_000_000),
+    ).derive(passphrase)
+
+
+_KDFS = {
+    "scrypt": (_scrypt_derive, _SCRYPT),
+    "argon2id": (_argon2_derive, _ARGON2),
+    "pbkdf2": (_pbkdf2_derive, _PBKDF2),
+}
+
+#: Selectable names, in the order they should be offered.
+KDF_NAMES = tuple(_KDFS)
+
+KDF_LABELS = {
+    "scrypt": "scrypt: memory-hard, the default",
+    "argon2id": "Argon2id: current best practice",
+    "pbkdf2": "PBKDF2: weakest of the three; what the browser can do natively",
+}
 
 
 def check_passphrase(passphrase: str) -> str:
@@ -80,46 +162,45 @@ def check_passphrase(passphrase: str) -> str:
 # Key derivation
 # --------------------------------------------------------------------------
 
-def _validate(params: dict) -> tuple[bytes, int, int, int]:
-    if not isinstance(params, dict) or params.get("name") != "scrypt":
-        _fail("This file uses a key derivation method this build does not know.")
-    try:
-        salt = base64.b64decode(params.get("salt", ""), validate=True)
-        n, r, p = int(params["n"]), int(params["r"]), int(params["p"])
-    except (binascii.Error, KeyError, TypeError, ValueError) as exc:
-        raise DecryptionError("The header's KDF parameters are malformed.") from exc
-
-    in_range = (
-        _N_RANGE[0] <= n <= _N_RANGE[1]
-        and _R_RANGE[0] <= r <= _R_RANGE[1]
-        and _P_RANGE[0] <= p <= _P_RANGE[1]
-        and n & (n - 1) == 0          # scrypt requires a power of two
-        and 8 <= len(salt) <= 64
-    )
-    if not in_range:
-        _fail("The header's KDF parameters are outside the supported range.")
-    return salt, n, r, p
+def new_params(name: str = DEFAULT_KDF) -> dict:
+    """Fresh KDF parameters, with a random salt, for a new file."""
+    if name not in _KDFS:
+        raise ValueError(f"unknown kdf: {name!r}")
+    return {
+        "name": name,
+        "salt": base64.b64encode(os.urandom(_SALT_BYTES)).decode(),
+        **_KDFS[name][1],
+    }
 
 
-def derive(passphrase: str, params: dict | None = None) -> tuple[bytes, bytes, dict]:
+def derive(
+    passphrase: str,
+    params: dict | None = None,
+    *,
+    name: str = DEFAULT_KDF,
+) -> tuple[bytes, bytes, dict]:
     """Turn a passphrase into a cipher key, a MAC key, and the params used.
 
-    Two independent keys come out of one scrypt call rather than two, because
-    scrypt is deliberately slow and one pass is all the entropy needs.
+    Both keys come out of one KDF call rather than two. These functions are
+    deliberately slow, and one pass yields far more entropy than two 32-byte
+    keys need; running it twice would double the cost for nothing.
     """
     if params is None:
-        salt, n, r, p = os.urandom(_SALT_BYTES), _N, _R, _P
-        params = {
-            "name": "scrypt",
-            "salt": base64.b64encode(salt).decode(),
-            "n": n, "r": r, "p": p,
-        }
-    else:
-        salt, n, r, p = _validate(params)
+        params = new_params(name)
 
-    material = Scrypt(salt=salt, length=KEY_BYTES * 2, n=n, r=r, p=p).derive(
-        passphrase.encode("utf-8")
-    )
+    kdf_name = params.get("name") if isinstance(params, dict) else None
+    entry = _KDFS.get(kdf_name) if isinstance(kdf_name, str) else None
+    if entry is None:
+        _fail(f"This file uses a key derivation method this build does not know: {kdf_name!r}")
+
+    try:
+        salt = base64.b64decode(params.get("salt", ""), validate=True)
+    except (binascii.Error, TypeError, ValueError) as exc:
+        raise DecryptionError("The header's salt is malformed.") from exc
+    if not _SALT_RANGE[0] <= len(salt) <= _SALT_RANGE[1]:
+        _fail("The header's salt is not a usable length.")
+
+    material = entry[0](passphrase.encode("utf-8"), salt, params, KEY_BYTES * 2)
     return material[:KEY_BYTES], material[KEY_BYTES:], params
 
 

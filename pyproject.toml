@@ -28,5 +28,14 @@ ignore = [
 # Tests reach into private helpers on purpose.
 "tests/*" = ["E501"]
 
+[tool.mypy]
+python_version = "3.12"
+files = ["app.py", "cli.py", "utils", "routes"]
+# numpy and Pillow ship types; Flask and pycryptodome are patchier. Chasing
+# stubs for them buys nothing here.
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

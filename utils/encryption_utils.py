@@ -206,9 +206,23 @@ def rsa_decrypt(data: bytes, material: dict, *, key: bytes | None = None) -> byt
         "File is too short to be valid RSA output.",
     )
     pem = material.get("private_key")
-    _require(isinstance(pem, str) and pem != "", "Key file has no private_key entry.")
+    if not isinstance(pem, str) or not pem:
+        raise DecryptionError("Key file has no private_key entry.")
+
     try:
         private_key = serialization.load_pem_private_key(pem.encode(), password=key)
+    except (TypeError, ValueError) as exc:
+        # Also where a passphrase-encrypted PEM opened without the passphrase
+        # lands, which is the common case rather than the exotic one.
+        raise DecryptionError("Wrong key, or the file has been modified.") from exc
+
+    # The PEM decides what comes back, and the PEM came from the key file. Only
+    # RSA keys have decrypt(); an Ed25519 one would raise AttributeError into
+    # the catch-all below and be reported as a wrong key, which it is not.
+    if not isinstance(private_key, rsa.RSAPrivateKey):
+        raise DecryptionError("That key file holds a private key that is not RSA.")
+
+    try:
         data_key = private_key.decrypt(
             data[:_RSA_WRAPPED_LEN],
             asym_padding.OAEP(
@@ -547,12 +561,12 @@ def visual_encrypt(data: bytes, *, key: bytes | None = None) -> tuple[bytes, dic
 
 
 def visual_decrypt(data: bytes, material: dict, *, key: bytes | None = None) -> bytes:
-    from PIL import Image
+    from PIL import Image, UnidentifiedImageError
 
     try:
         archive = zipfile.ZipFile(io.BytesIO(data))
         names = archive.namelist()
-    except zipfile.BadZipFile as exc:
+    except (zipfile.BadZipFile, OSError) as exc:
         raise DecryptionError(
             "Expected the share archive produced by visual cryptography."
         ) from exc
@@ -569,10 +583,25 @@ def visual_decrypt(data: bytes, material: dict, *, key: bytes | None = None) -> 
             archive.getinfo(name).file_size <= _VC_MAX_SHARE_BYTES,
             "That share image is implausibly large.",
         )
-        with archive.open(name) as handle:
-            raw = handle.read(_VC_MAX_SHARE_BYTES + 1)
+        try:
+            with archive.open(name) as handle:
+                raw = handle.read(_VC_MAX_SHARE_BYTES + 1)
+        except (zipfile.BadZipFile, OSError) as exc:
+            raise DecryptionError("That share image could not be read.") from exc
         _require(len(raw) <= _VC_MAX_SHARE_BYTES, "That share image is implausibly large.")
-        shares.append(np.array(Image.open(io.BytesIO(raw)).convert("1"), dtype=np.uint8))
+
+        # A .png name proves nothing about the contents. Since any zip holding
+        # two of them is now routed here without a key file, an ordinary archive
+        # dropped in by mistake reaches this line -- and must get a sentence
+        # rather than a stack trace.
+        try:
+            image = Image.open(io.BytesIO(raw))
+            image.load()
+        except (UnidentifiedImageError, OSError, ValueError) as exc:
+            raise DecryptionError(
+                "That archive does not hold a pair of share images."
+            ) from exc
+        shares.append(np.array(image.convert("1"), dtype=np.uint8))
 
     _require(shares[0].shape == shares[1].shape, "The two shares are different sizes.")
 

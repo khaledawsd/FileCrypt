@@ -32,5 +32,15 @@ jobs:
       - name: Lint
         run: ruff check .
 
+      - name: Type check
+        run: mypy
+
+      # The Python suite cannot see the browser half at all, so a syntax error
+      # in these files ships silently: the page just stops working, and the
+      # form falls back to a native submit that looks almost right. Two seconds
+      # here catches that.
+      - name: Check browser JavaScript parses
+        run: node --check static/js/app.js && node --check static/js/chrome.js && node --check static/js/crypto.js
+
       - name: Test
         run: python -m pytest -q
